@@ -25,6 +25,7 @@ export function useAIRoute(
   destinationName: string = "",
   startName: string = "",
   timeMinutes: number | null = null,
+  loopMode: boolean = false,
 ): AIRouteResult {
   const [areaName, setAreaName] = useState<string | null>(null);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
@@ -35,6 +36,7 @@ export function useAIRoute(
   const destinationNameRef = useRef(destinationName);
   const startNameRef = useRef(startName);
   const timeMinutesRef = useRef(timeMinutes);
+  const loopModeRef = useRef(loopMode);
   const hasFetched = useRef(false);
 
   useEffect(() => { latRef.current = lat; }, [lat]);
@@ -42,6 +44,7 @@ export function useAIRoute(
   useEffect(() => { destinationNameRef.current = destinationName; }, [destinationName]);
   useEffect(() => { startNameRef.current = startName; }, [startName]);
   useEffect(() => { timeMinutesRef.current = timeMinutes; }, [timeMinutes]);
+  useEffect(() => { loopModeRef.current = loopMode; }, [loopMode]);
 
   useEffect(() => {
     if (!isActive) {
@@ -52,7 +55,7 @@ export function useAIRoute(
       return;
     }
 
-    const hasDestination = destinationName.trim().length > 0;
+    const hasDestination = destinationName.trim().length > 0 || loopMode;
     const delay = hasDestination ? DEST_FETCH_DELAY_MS : RANDOM_FETCH_DELAY_MS;
 
     const timer = setTimeout(async () => {
@@ -63,8 +66,10 @@ export function useAIRoute(
       const dest = destinationNameRef.current.trim();
       const start = startNameRef.current.trim();
       const mins = timeMinutesRef.current;
+      const loop = loopModeRef.current;
 
-      if (!dest && (curLat === null || curLng === null)) return;
+      if (!dest && !loop && (curLat === null || curLng === null)) return;
+      if (loop && (curLat === null || curLng === null)) return;
 
       hasFetched.current = true;
       setIsLoadingRoute(true);
@@ -76,6 +81,7 @@ export function useAIRoute(
         if (dest) body.destinationName = dest;
         if (start) body.startName = start;
         if (mins !== null) body.timeMinutes = mins;
+        if (loop) body.loopMode = true;
 
         const res = await fetch("/api/wander", {
           method: "POST",

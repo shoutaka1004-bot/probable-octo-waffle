@@ -35,6 +35,7 @@ import { useAmbientBGM } from "@/hooks/useAmbientBGM";
 import { useAIRoute, Waypoint } from "@/hooks/useAIRoute";
 
 type WalkState = "idle" | "routing" | "walking" | "arrived";
+type RouteMode = "free" | "destination" | "loop";
 
 interface Destination {
   lat: number;
@@ -67,6 +68,7 @@ export default function HomePage() {
   const [timeMode, setTimeMode] = useState<TimeModeId>("free");
 
   // ── Walk input state ──
+  const [routeMode, setRouteMode] = useState<RouteMode>("free");
   const [destinationInput, setDestinationInput] = useState("");
   const [startLocationInput, setStartLocationInput] = useState("");
   const [useGPSStart, setUseGPSStart] = useState(true);
@@ -120,9 +122,10 @@ export default function HomePage() {
     isRouteActive,
     geo.latitude,
     geo.longitude,
-    destinationInput,
-    useGPSStart ? "" : startLocationInput,
+    routeMode === "destination" ? destinationInput : "",
+    routeMode === "destination" && !useGPSStart ? startLocationInput : "",
     timeLimitSeconds !== null ? Math.round(timeLimitSeconds / 60) : null,
+    routeMode === "loop",
   );
 
   const statsRef = useRef(stats);
@@ -141,10 +144,13 @@ export default function HomePage() {
     if (t && THEMES[t]) setThemeId(t);
     const tm = localStorage.getItem("wander_time_mode") as TimeModeId | null;
     if (tm && TIME_MODES.find((d) => d.id === tm)) setTimeMode(tm);
+    const rm = localStorage.getItem("wander_route_mode") as RouteMode | null;
+    if (rm && ["free", "destination", "loop"].includes(rm)) setRouteMode(rm);
   }, []);
 
   useEffect(() => { localStorage.setItem("wander_theme", themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem("wander_time_mode", timeMode); }, [timeMode]);
+  useEffect(() => { localStorage.setItem("wander_route_mode", routeMode); }, [routeMode]);
 
   // ── Time limit computations ──
   const timeProgress =
@@ -166,11 +172,11 @@ export default function HomePage() {
     lastRelocationRef.current = 0;
     setEarnedBadges([]);
 
-    if (destinationInput.trim()) {
-      // Destination specified → wait for AI to generate route
+    if (routeMode === "destination" || routeMode === "loop") {
+      // AI generates route → wait for waypoints
       setWalkState("routing");
     } else {
-      // No destination → random immediate start
+      // Free mode → random immediate start
       const dest = generateRandomDestination(geo.latitude, geo.longitude, 500, 1000);
       const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
       setStartDistance(dist);
@@ -178,7 +184,7 @@ export default function HomePage() {
       startTracking();
       setWalkState("walking");
     }
-  }, [geo.latitude, geo.longitude, startTracking, destinationInput]);
+  }, [geo.latitude, geo.longitude, startTracking, routeMode]);
 
   // ── Routing → walking: transition when AI waypoints arrive ──
   useEffect(() => {
@@ -467,78 +473,115 @@ export default function HomePage() {
                   </div>
                 )}
 
-              {/* Destination input */}
+              {/* Route mode selector */}
               <div className="w-full max-w-[280px]">
                 <p
                   className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
                   style={{ color: theme.textDim }}
                 >
-                  目的地
-                </p>
-                <input
-                  type="text"
-                  value={destinationInput}
-                  onChange={(e) => setDestinationInput(e.target.value)}
-                  placeholder="行きたい場所を入力（例：渋谷駅）"
-                  className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
-                  style={{
-                    border: `1px solid ${destinationInput ? theme.accentColor + "88" : theme.cardBorder}`,
-                    color: theme.textPrimary,
-                    backgroundColor: theme.cardBg,
-                  }}
-                />
-              </div>
-
-              {/* Start location */}
-              <div className="w-full max-w-[280px]">
-                <p
-                  className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
-                  style={{ color: theme.textDim }}
-                >
-                  出発地点
+                  ルートタイプ
                 </p>
                 <div
-                  className="flex rounded-xl overflow-hidden mb-2"
+                  className="grid grid-cols-3 rounded-xl overflow-hidden"
                   style={{ border: `1px solid ${theme.cardBorder}` }}
                 >
-                  <button
-                    onClick={() => setUseGPSStart(true)}
-                    className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
-                    style={
-                      useGPSStart
-                        ? { backgroundColor: theme.accentColor, color: "#fff" }
-                        : { backgroundColor: theme.cardBg, color: theme.textDim }
-                    }
-                  >
-                    📍 現在地
-                  </button>
-                  <button
-                    onClick={() => setUseGPSStart(false)}
-                    className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
-                    style={
-                      !useGPSStart
-                        ? { backgroundColor: theme.accentColor, color: "#fff" }
-                        : { backgroundColor: theme.cardBg, color: theme.textDim }
-                    }
-                  >
-                    ✏️ 場所を入力
-                  </button>
+                  {([
+                    { id: "free",        label: "🎲 自由散歩", desc: "ランダム" },
+                    { id: "destination", label: "🎯 目的地へ", desc: "場所を指定" },
+                    { id: "loop",        label: "🔄 周回",     desc: "戻ってくる" },
+                  ] as { id: RouteMode; label: string; desc: string }[]).map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => setRouteMode(mode.id)}
+                      className="py-2.5 text-center transition-colors"
+                      style={
+                        routeMode === mode.id
+                          ? { backgroundColor: theme.accentColor, color: "#fff" }
+                          : { backgroundColor: theme.cardBg, color: theme.textDim }
+                      }
+                    >
+                      <div className="text-[11px] font-medium">{mode.label}</div>
+                      <div className="text-[9px] opacity-70 leading-tight">{mode.desc}</div>
+                    </button>
+                  ))}
                 </div>
-                {!useGPSStart && (
-                  <input
-                    type="text"
-                    value={startLocationInput}
-                    onChange={(e) => setStartLocationInput(e.target.value)}
-                    placeholder="出発地点を入力（例：新宿駅）"
-                    className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
-                    style={{
-                      border: `1px solid ${theme.cardBorder}`,
-                      color: theme.textPrimary,
-                      backgroundColor: theme.cardBg,
-                    }}
-                  />
-                )}
               </div>
+
+              {/* Destination + start inputs — only for destination mode */}
+              {routeMode === "destination" && (
+                <>
+                  <div className="w-full max-w-[280px]">
+                    <p
+                      className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
+                      style={{ color: theme.textDim }}
+                    >
+                      目的地
+                    </p>
+                    <input
+                      type="text"
+                      value={destinationInput}
+                      onChange={(e) => setDestinationInput(e.target.value)}
+                      placeholder="行きたい場所を入力（例：渋谷駅）"
+                      className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
+                      style={{
+                        border: `1px solid ${destinationInput ? theme.accentColor + "88" : theme.cardBorder}`,
+                        color: theme.textPrimary,
+                        backgroundColor: theme.cardBg,
+                      }}
+                    />
+                  </div>
+
+                  <div className="w-full max-w-[280px]">
+                    <p
+                      className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
+                      style={{ color: theme.textDim }}
+                    >
+                      出発地点
+                    </p>
+                    <div
+                      className="flex rounded-xl overflow-hidden mb-2"
+                      style={{ border: `1px solid ${theme.cardBorder}` }}
+                    >
+                      <button
+                        onClick={() => setUseGPSStart(true)}
+                        className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
+                        style={
+                          useGPSStart
+                            ? { backgroundColor: theme.accentColor, color: "#fff" }
+                            : { backgroundColor: theme.cardBg, color: theme.textDim }
+                        }
+                      >
+                        📍 現在地
+                      </button>
+                      <button
+                        onClick={() => setUseGPSStart(false)}
+                        className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
+                        style={
+                          !useGPSStart
+                            ? { backgroundColor: theme.accentColor, color: "#fff" }
+                            : { backgroundColor: theme.cardBg, color: theme.textDim }
+                        }
+                      >
+                        ✏️ 場所を入力
+                      </button>
+                    </div>
+                    {!useGPSStart && (
+                      <input
+                        type="text"
+                        value={startLocationInput}
+                        onChange={(e) => setStartLocationInput(e.target.value)}
+                        placeholder="出発地点を入力（例：新宿駅）"
+                        className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
+                        style={{
+                          border: `1px solid ${theme.cardBorder}`,
+                          color: theme.textPrimary,
+                          backgroundColor: theme.cardBg,
+                        }}
+                      />
+                    )}
+                  </div>
+                </>
+              )}
 
               {/* Time mode selector */}
               <div className="w-full max-w-[280px]">
@@ -601,26 +644,35 @@ export default function HomePage() {
               </div>
 
               {/* Start button */}
-              <div className="flex flex-col items-center gap-2">
-                <button
-                  onClick={handleStart}
-                  className="px-10 py-4 text-white rounded-2xl font-semibold tracking-widest text-base transition-colors shadow-lg"
-                  style={{
-                    backgroundColor: theme.accentColor,
-                    boxShadow: `0 10px 15px -3px ${theme.accentShadow}`,
-                  }}
-                >
-                  {destinationInput.trim() ? "ルートを構成してスタート" : "ランダムに出発"}
-                </button>
-                <p
-                  className="text-[10px] tracking-wider"
-                  style={{ color: theme.textDimmer }}
-                >
-                  {destinationInput.trim()
-                    ? `→ ${destinationInput}`
-                    : "ランダムな目的地へ出発"}
-                </p>
-              </div>
+              {(() => {
+                const disabled = routeMode === "destination" && !destinationInput.trim();
+                const label =
+                  routeMode === "free" ? "ランダムに出発" :
+                  routeMode === "loop" ? "周回ルートで出発" :
+                  "ルートを構成してスタート";
+                const sub =
+                  routeMode === "free" ? "ランダムな目的地へ出発" :
+                  routeMode === "loop" ? "出発地に戻る周回ルートを生成" :
+                  destinationInput.trim() ? `→ ${destinationInput}` : "目的地を入力してください";
+                return (
+                  <div className="flex flex-col items-center gap-2">
+                    <button
+                      onClick={handleStart}
+                      disabled={disabled}
+                      className="px-10 py-4 text-white rounded-2xl font-semibold tracking-widest text-base transition-colors shadow-lg disabled:opacity-40"
+                      style={{
+                        backgroundColor: theme.accentColor,
+                        boxShadow: disabled ? "none" : `0 10px 15px -3px ${theme.accentShadow}`,
+                      }}
+                    >
+                      {label}
+                    </button>
+                    <p className="text-[10px] tracking-wider" style={{ color: theme.textDimmer }}>
+                      {sub}
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -634,10 +686,10 @@ export default function HomePage() {
                   className="text-[10px] tracking-[0.45em] uppercase animate-pulse"
                   style={{ color: theme.textDim }}
                 >
-                  ルートを構成中...
+                  {routeMode === "loop" ? "周回ルートを構成中..." : "ルートを構成中..."}
                 </p>
 
-                {destinationInput && (
+                {routeMode === "destination" && destinationInput && (
                   <div
                     className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm tracking-wider"
                     style={{
@@ -651,7 +703,21 @@ export default function HomePage() {
                   </div>
                 )}
 
-                {!useGPSStart && startLocationInput && (
+                {routeMode === "loop" && (
+                  <div
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm tracking-wider"
+                    style={{
+                      background: theme.cardBg,
+                      border: `1px solid ${theme.accentColor}55`,
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    <span style={{ color: theme.accentColor }}>🔄</span>
+                    <span>出発地に戻る周回ルート</span>
+                  </div>
+                )}
+
+                {routeMode === "destination" && !useGPSStart && startLocationInput && (
                   <p className="text-[10px] tracking-wider" style={{ color: theme.textDimmer }}>
                     出発: {startLocationInput}
                   </p>
