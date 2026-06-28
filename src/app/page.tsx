@@ -23,7 +23,6 @@ import {
 } from "@/lib/theme";
 import { CompassArrow } from "@/components/CompassArrow";
 import { CompassParticles } from "@/components/CompassParticles";
-import { AuroraRing } from "@/components/AuroraRing";
 import { SwingArrow } from "@/components/SwingArrow";
 import { WalkCompanion } from "@/components/WalkCompanion";
 import { ArrivalModal } from "@/components/ArrivalModal";
@@ -52,12 +51,6 @@ function formatElapsed(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-function countdownColor(progress: number): string {
-  if (progress >= 0.8) return "#ef4444";
-  if (progress >= 0.5) return "#eab308";
-  return "#22d3ee";
-}
-
 export default function HomePage() {
   const geo = useGeolocation();
   const orientation = useDeviceOrientation();
@@ -80,7 +73,6 @@ export default function HomePage() {
   const [earnedBadges, setEarnedBadges] = useState<Badge[]>([]);
   const [earnedPoints, setEarnedPoints] = useState(0);
   const badgesComputedRef = useRef(false);
-  const lastRelocationRef = useRef<number>(0);
 
   // ── Waypoint navigation ──
   const [waypointIndex, setWaypointIndex] = useState(0);
@@ -129,9 +121,7 @@ export default function HomePage() {
   );
 
   const statsRef = useRef(stats);
-  const timeModeRef = useRef(timeMode);
   useEffect(() => { statsRef.current = stats; }, [stats]);
-  useEffect(() => { timeModeRef.current = timeMode; }, [timeMode]);
 
   const theme: ThemeConfig = THEMES[themeId];
 
@@ -152,16 +142,6 @@ export default function HomePage() {
   useEffect(() => { localStorage.setItem("wander_time_mode", timeMode); }, [timeMode]);
   useEffect(() => { localStorage.setItem("wander_route_mode", routeMode); }, [routeMode]);
 
-  // ── Time limit computations ──
-  const timeProgress =
-    timeLimitSeconds !== null
-      ? Math.min(1, stats.elapsedSeconds / timeLimitSeconds)
-      : 0;
-  const timeRemaining =
-    timeLimitSeconds !== null
-      ? Math.max(0, timeLimitSeconds - stats.elapsedSeconds)
-      : null;
-
   // ── Start walk ──
   const handleStart = useCallback(() => {
     if (geo.latitude === null || geo.longitude === null) return;
@@ -169,7 +149,6 @@ export default function HomePage() {
     setWaypointIndex(0);
     lastAdvancedRef.current = -1;
     badgesComputedRef.current = false;
-    lastRelocationRef.current = 0;
     setEarnedBadges([]);
 
     if (routeMode === "destination" || routeMode === "loop") {
@@ -204,22 +183,13 @@ export default function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waypoints]);
 
-  // ── Routing timeout: fallback to random if AI takes too long ──
+  // ── Routing timeout: AI が応答しない場合は idle に戻る ──
   useEffect(() => {
     if (walkState !== "routing") return;
     const timeout = setTimeout(() => {
-      const { lat: gLat, lng: gLng } = geoRef.current;
-      if (gLat !== null && gLng !== null) {
-        const dest = generateRandomDestination(gLat, gLng, 500, 1000);
-        const dist = calculateDistance(gLat, gLng, dest.lat, dest.lng);
-        setStartDistance(dist);
-        setDestination(dest);
-      }
-      startTracking();
-      setWalkState("walking");
+      setWalkState("idle");
     }, ROUTING_TIMEOUT_MS);
     return () => clearTimeout(timeout);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walkState]);
 
   // ── When AI waypoints arrive during random walk, retarget compass ──
@@ -253,26 +223,6 @@ export default function HomePage() {
         const nextIdx = waypointIndex + 1;
         setWaypointIndex(nextIdx);
         setDestination({ lat: waypoints[nextIdx].lat, lng: waypoints[nextIdx].lng });
-      }
-      return;
-    }
-
-    // ── Time-limit relocation ──
-    const currentMode = timeModeRef.current;
-    const mCfg = TIME_MODES.find((m) => m.id === currentMode);
-    const limitSec: number | null =
-      mCfg && mCfg.minutes !== null ? mCfg.minutes * 60 : null;
-    const elapsed = statsRef.current.elapsedSeconds;
-    const tProg = limitSec !== null ? elapsed / limitSec : 1;
-
-    if (limitSec !== null && tProg < 0.8) {
-      const now = Date.now();
-      if (now - lastRelocationRef.current > 5000) {
-        lastRelocationRef.current = now;
-        const newDest = generateRandomDestination(
-          geo.latitude, geo.longitude, 150, 350
-        );
-        setDestination(newDest);
       }
       return;
     }
@@ -767,14 +717,6 @@ export default function HomePage() {
                   theme={theme}
                 />
 
-                {timeLimitSeconds !== null && (
-                  <AuroraRing
-                    arrowRotation={arrowRotation}
-                    timeProgress={timeProgress}
-                    size={ARROW_SIZE}
-                  />
-                )}
-
                 {[0, 1, 2].map((i) => (
                   <div
                     key={i}
@@ -795,8 +737,8 @@ export default function HomePage() {
                 <div className="absolute inset-0 flex items-center justify-center" style={{ zIndex: 4 }}>
                   <SwingArrow
                     rotation={arrowRotation}
-                    timeProgress={timeProgress}
-                    timeLimitSeconds={timeLimitSeconds}
+                    timeProgress={0}
+                    timeLimitSeconds={null}
                     baseColor={arrowSkinId !== "default" ? activeArrowSkin.baseColor : theme.particleColor}
                     arrowVariant={activeArrowSkin.variant}
                     size={ARROW_SIZE}
@@ -958,7 +900,7 @@ export default function HomePage() {
         <footer className="relative z-10 flex flex-col items-center gap-3 w-full">
           {walkState === "walking" && (
             <div className="flex flex-col items-center gap-3 w-full">
-              <div className="flex items-center justify-center gap-6">
+              <div className="flex items-center justify-center">
                 <div className="flex flex-col items-center">
                   <span
                     className="text-sm font-mono tabular-nums"
@@ -973,25 +915,6 @@ export default function HomePage() {
                     経過
                   </span>
                 </div>
-                {timeRemaining !== null && (
-                  <>
-                    <span style={{ color: theme.cardBorder }}>｜</span>
-                    <div className="flex flex-col items-center">
-                      <span
-                        className="text-sm font-mono tabular-nums font-semibold"
-                        style={{ color: countdownColor(timeProgress) }}
-                      >
-                        {formatElapsed(timeRemaining)}
-                      </span>
-                      <span
-                        className="text-[9px] tracking-widest"
-                        style={{ color: theme.textDimmer }}
-                      >
-                        残り時間
-                      </span>
-                    </div>
-                  </>
-                )}
               </div>
 
               <button
