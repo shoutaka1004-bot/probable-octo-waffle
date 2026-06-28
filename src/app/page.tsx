@@ -33,6 +33,7 @@ import { CollectionScreen } from "@/components/CollectionScreen";
 import { EventPopup } from "@/components/EventPopup";
 import { useWalkEvents } from "@/hooks/useWalkEvents";
 import { useAmbientBGM } from "@/hooks/useAmbientBGM";
+import { useAILore } from "@/hooks/useAILore";
 
 type WalkState = "idle" | "walking" | "arrived";
 
@@ -82,6 +83,7 @@ export default function HomePage() {
     geo.speed ?? 0,
     new Date().getHours() >= 19,
   );
+  const { aiLore, isLoadingLore } = useAILore(isWalking, geo.latitude, geo.longitude);
 
   // Refs so effects can read latest values without stale closures
   const statsRef = useRef(stats);
@@ -558,10 +560,16 @@ export default function HomePage() {
                 </p>
               </div>
 
-              {/* Hint / lore */}
-              {hint && (
+              {/* Hint / lore (AI or static) */}
+              {(isLoadingLore || aiLore || hint) && (
                 <div
-                  key={hint}
+                  key={
+                    isLoadingLore
+                      ? "ai-loading"
+                      : aiLore
+                      ? `ai:${aiLore.slice(0, 16)}`
+                      : (hint ?? "")
+                  }
                   className="w-full max-w-xs"
                   style={{ animation: "hintFade 0.8s ease-out forwards" }}
                 >
@@ -570,12 +578,13 @@ export default function HomePage() {
                     style={{
                       background: theme.cardBg + "99",
                       border: `1px solid ${theme.cardBorder}`,
-                      borderLeft: hintType === "lore"
-                        ? "2px solid rgba(167,139,250,0.6)"
-                        : `2px solid ${theme.hintBorder}`,
+                      borderLeft:
+                        isLoadingLore || aiLore || hintType === "lore"
+                          ? "2px solid rgba(167,139,250,0.6)"
+                          : `2px solid ${theme.hintBorder}`,
                     }}
                   >
-                    {hintType === "lore" && (
+                    {(isLoadingLore || aiLore || hintType === "lore") && (
                       <p
                         className="text-[8px] tracking-[0.45em] uppercase mb-1.5"
                         style={{ color: "rgba(167,139,250,0.65)" }}
@@ -584,15 +593,28 @@ export default function HomePage() {
                       </p>
                     )}
                     <p
-                      className="text-[11px] tracking-[0.12em] leading-relaxed italic font-light"
+                      className={`text-[11px] tracking-[0.12em] leading-relaxed italic font-light${
+                        isLoadingLore ? " animate-pulse" : ""
+                      }`}
                       style={{
-                        color: hintType === "lore"
-                          ? "rgba(196,181,253,0.70)"
-                          : theme.hintText,
+                        color:
+                          isLoadingLore || aiLore || hintType === "lore"
+                            ? "rgba(196,181,253,0.70)"
+                            : theme.hintText,
                       }}
                     >
-                      {hint}
+                      {isLoadingLore
+                        ? "土地の記憶を辿っています..."
+                        : (aiLore ?? hint)}
                     </p>
+                    {!isLoadingLore && aiLore && (
+                      <p
+                        className="text-[8px] mt-1.5"
+                        style={{ color: "rgba(167,139,250,0.35)" }}
+                      >
+                        ✦ AI生成
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
