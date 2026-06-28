@@ -16,10 +16,8 @@ import { saveWalkLog, markBadgesEarned, addPoints, getActiveCompanionSkin, getAc
 import { calcEarnedPoints, getArrowSkin } from "@/lib/shop";
 import {
   THEMES,
-  DISTANCE_MODES,
   TIME_MODES,
   ThemeId,
-  DistanceModeId,
   TimeModeId,
   ThemeConfig,
 } from "@/lib/theme";
@@ -36,7 +34,7 @@ import { useWalkEvents } from "@/hooks/useWalkEvents";
 import { useAmbientBGM } from "@/hooks/useAmbientBGM";
 import { useAIRoute, Waypoint } from "@/hooks/useAIRoute";
 
-type WalkState = "idle" | "walking" | "arrived";
+type WalkState = "idle" | "routing" | "walking" | "arrived";
 
 interface Destination {
   lat: number;
@@ -45,6 +43,7 @@ interface Destination {
 
 const ARRIVAL_THRESHOLD_M = 20;
 const ARROW_SIZE = 280;
+const ROUTING_TIMEOUT_MS = 20_000;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -65,8 +64,12 @@ export default function HomePage() {
   // ── UI state ──
   const [activeScreen, setActiveScreen] = useState<AppScreen>("compass");
   const [themeId, setThemeId] = useState<ThemeId>("cyber");
-  const [distanceMode, setDistanceMode] = useState<DistanceModeId>("normal");
   const [timeMode, setTimeMode] = useState<TimeModeId>("free");
+
+  // ── Walk input state ──
+  const [destinationInput, setDestinationInput] = useState("");
+  const [startLocationInput, setStartLocationInput] = useState("");
+  const [useGPSStart, setUseGPSStart] = useState(true);
 
   // ── Walk state ──
   const [walkState, setWalkState] = useState<WalkState>("idle");
@@ -79,7 +82,13 @@ export default function HomePage() {
 
   // ── Waypoint navigation ──
   const [waypointIndex, setWaypointIndex] = useState(0);
-  const lastAdvancedRef = useRef(-1); // prevents double-trigger on same waypoint
+  const lastAdvancedRef = useRef(-1);
+
+  // ── GPS ref for async/timeout callbacks ──
+  const geoRef = useRef({ lat: geo.latitude, lng: geo.longitude });
+  useEffect(() => {
+    geoRef.current = { lat: geo.latitude, lng: geo.longitude };
+  }, [geo.latitude, geo.longitude]);
 
   // ── Active skins ──
   const [companionSkinId, setCompanionSkinId] = useState("default");
@@ -91,6 +100,8 @@ export default function HomePage() {
   }, []);
 
   const isWalking = walkState === "walking";
+  const isRouteActive = walkState === "routing" || walkState === "walking";
+
   const { stats, startTracking } = useWalkTracker(geo.latitude, geo.longitude, isWalking);
   const { hint, hintType } = useWalkHints(isWalking);
   const { event: walkEvent, clearEvent } = useWalkEvents(isWalking);
@@ -98,14 +109,25 @@ export default function HomePage() {
     geo.speed ?? 0,
     new Date().getHours() >= 19,
   );
-  const { areaName, waypoints, isLoadingRoute } = useAIRoute(isWalking, geo.latitude, geo.longitude);
 
-  // Refs so effects can read latest values without stale closures
+  const timeModeConfig = TIME_MODES.find((m) => m.id === timeMode);
+  const timeLimitSeconds: number | null =
+    timeModeConfig && timeModeConfig.minutes !== null
+      ? timeModeConfig.minutes * 60
+      : null;
+
+  const { areaName, waypoints, isLoadingRoute } = useAIRoute(
+    isRouteActive,
+    geo.latitude,
+    geo.longitude,
+    destinationInput,
+    useGPSStart ? "" : startLocationInput,
+    timeLimitSeconds !== null ? Math.round(timeLimitSeconds / 60) : null,
+  );
+
   const statsRef = useRef(stats);
-  const distanceModeRef = useRef(distanceMode);
   const timeModeRef = useRef(timeMode);
   useEffect(() => { statsRef.current = stats; }, [stats]);
-  useEffect(() => { distanceModeRef.current = distanceMode; }, [distanceMode]);
   useEffect(() => { timeModeRef.current = timeMode; }, [timeMode]);
 
   const theme: ThemeConfig = THEMES[themeId];
@@ -117,22 +139,14 @@ export default function HomePage() {
   useEffect(() => {
     const t = localStorage.getItem("wander_theme") as ThemeId | null;
     if (t && THEMES[t]) setThemeId(t);
-    const m = localStorage.getItem("wander_distance_mode") as DistanceModeId | null;
-    if (m && DISTANCE_MODES.find((d) => d.id === m)) setDistanceMode(m);
     const tm = localStorage.getItem("wander_time_mode") as TimeModeId | null;
     if (tm && TIME_MODES.find((d) => d.id === tm)) setTimeMode(tm);
   }, []);
 
   useEffect(() => { localStorage.setItem("wander_theme", themeId); }, [themeId]);
-  useEffect(() => { localStorage.setItem("wander_distance_mode", distanceMode); }, [distanceMode]);
   useEffect(() => { localStorage.setItem("wander_time_mode", timeMode); }, [timeMode]);
 
   // ── Time limit computations ──
-  const timeModeConfig = TIME_MODES.find((m) => m.id === timeMode);
-  const timeLimitSeconds: number | null =
-    timeModeConfig && timeModeConfig.minutes !== null
-      ? timeModeConfig.minutes * 60
-      : null;
   const timeProgress =
     timeLimitSeconds !== null
       ? Math.min(1, stats.elapsedSeconds / timeLimitSeconds)
@@ -145,23 +159,64 @@ export default function HomePage() {
   // ── Start walk ──
   const handleStart = useCallback(() => {
     if (geo.latitude === null || geo.longitude === null) return;
-    const modeConfig = DISTANCE_MODES.find((d) => d.id === distanceModeRef.current)!;
-    const dest = generateRandomDestination(
-      geo.latitude, geo.longitude, modeConfig.min, modeConfig.max
-    );
-    const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
-    setStartDistance(dist);
-    setDestination(dest);
+
     setWaypointIndex(0);
     lastAdvancedRef.current = -1;
     badgesComputedRef.current = false;
     lastRelocationRef.current = 0;
     setEarnedBadges([]);
+
+    if (destinationInput.trim()) {
+      // Destination specified → wait for AI to generate route
+      setWalkState("routing");
+    } else {
+      // No destination → random immediate start
+      const dest = generateRandomDestination(geo.latitude, geo.longitude, 500, 1000);
+      const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
+      setStartDistance(dist);
+      setDestination(dest);
+      startTracking();
+      setWalkState("walking");
+    }
+  }, [geo.latitude, geo.longitude, startTracking, destinationInput]);
+
+  // ── Routing → walking: transition when AI waypoints arrive ──
+  useEffect(() => {
+    if (walkState !== "routing" || waypoints.length === 0) return;
+    const finalWp = waypoints[waypoints.length - 1];
+    const { lat: gLat, lng: gLng } = geoRef.current;
+    const dist =
+      gLat !== null && gLng !== null
+        ? calculateDistance(gLat, gLng, finalWp.lat, finalWp.lng)
+        : 0;
+    setStartDistance(dist);
+    setWaypointIndex(0);
+    lastAdvancedRef.current = -1;
+    setDestination({ lat: waypoints[0].lat, lng: waypoints[0].lng });
     startTracking();
     setWalkState("walking");
-  }, [geo.latitude, geo.longitude, startTracking]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waypoints]);
 
-  // ── When AI waypoints arrive, redirect to first waypoint ──
+  // ── Routing timeout: fallback to random if AI takes too long ──
+  useEffect(() => {
+    if (walkState !== "routing") return;
+    const timeout = setTimeout(() => {
+      const { lat: gLat, lng: gLng } = geoRef.current;
+      if (gLat !== null && gLng !== null) {
+        const dest = generateRandomDestination(gLat, gLng, 500, 1000);
+        const dist = calculateDistance(gLat, gLng, dest.lat, dest.lng);
+        setStartDistance(dist);
+        setDestination(dest);
+      }
+      startTracking();
+      setWalkState("walking");
+    }, ROUTING_TIMEOUT_MS);
+    return () => clearTimeout(timeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walkState]);
+
+  // ── When AI waypoints arrive during random walk, retarget compass ──
   useEffect(() => {
     if (!isWalking || waypoints.length === 0) return;
     setWaypointIndex(0);
@@ -236,7 +291,7 @@ export default function HomePage() {
         estimatedSteps: s.estimatedSteps,
         routePoints: s.routePoints,
         earnedBadgeIds: earned.map((b) => b.id),
-        distanceMode: distanceModeRef.current,
+        distanceMode: "normal",
       });
       markBadgesEarned(earned.map((b) => b.id));
     }
@@ -303,7 +358,6 @@ export default function HomePage() {
         {/* ── Header ── */}
         <header className="relative z-10 w-full mt-4">
           {walkState === "walking" ? (
-            /* Walking: mini spinning compass + WANDER text + BGM toggle */
             <div className="flex items-center gap-3 px-1">
               <div
                 style={{
@@ -333,7 +387,6 @@ export default function HomePage() {
                   あえて迷う散歩
                 </p>
               </div>
-              {/* BGM toggle */}
               <button
                 onClick={toggleBGM}
                 className="text-base px-2.5 py-1.5 rounded-full transition-all"
@@ -348,7 +401,6 @@ export default function HomePage() {
               </button>
             </div>
           ) : (
-            /* Idle / GPS loading: centered */
             <div className="text-center">
               <p className="text-[10px] tracking-[0.4em] uppercase" style={{ color: theme.textDim }}>
                 No map · No plan
@@ -415,34 +467,77 @@ export default function HomePage() {
                   </div>
                 )}
 
-              {/* Distance mode selector */}
+              {/* Destination input */}
               <div className="w-full max-w-[280px]">
                 <p
                   className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
                   style={{ color: theme.textDim }}
                 >
-                  お散歩の距離
+                  目的地
+                </p>
+                <input
+                  type="text"
+                  value={destinationInput}
+                  onChange={(e) => setDestinationInput(e.target.value)}
+                  placeholder="行きたい場所を入力（例：渋谷駅）"
+                  className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
+                  style={{
+                    border: `1px solid ${destinationInput ? theme.accentColor + "88" : theme.cardBorder}`,
+                    color: theme.textPrimary,
+                    backgroundColor: theme.cardBg,
+                  }}
+                />
+              </div>
+
+              {/* Start location */}
+              <div className="w-full max-w-[280px]">
+                <p
+                  className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
+                  style={{ color: theme.textDim }}
+                >
+                  出発地点
                 </p>
                 <div
-                  className="flex rounded-xl overflow-hidden"
+                  className="flex rounded-xl overflow-hidden mb-2"
                   style={{ border: `1px solid ${theme.cardBorder}` }}
                 >
-                  {DISTANCE_MODES.map((mode) => (
-                    <button
-                      key={mode.id}
-                      onClick={() => setDistanceMode(mode.id)}
-                      className="flex-1 py-2.5 text-center transition-colors"
-                      style={
-                        distanceMode === mode.id
-                          ? { backgroundColor: theme.accentColor, color: "#fff" }
-                          : { backgroundColor: theme.cardBg, color: theme.textDim }
-                      }
-                    >
-                      <div className="text-[11px] font-medium">{mode.label}</div>
-                      <div className="text-[9px] opacity-70">{mode.desc}</div>
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => setUseGPSStart(true)}
+                    className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
+                    style={
+                      useGPSStart
+                        ? { backgroundColor: theme.accentColor, color: "#fff" }
+                        : { backgroundColor: theme.cardBg, color: theme.textDim }
+                    }
+                  >
+                    📍 現在地
+                  </button>
+                  <button
+                    onClick={() => setUseGPSStart(false)}
+                    className="flex-1 py-2.5 text-center transition-colors text-[11px] font-medium"
+                    style={
+                      !useGPSStart
+                        ? { backgroundColor: theme.accentColor, color: "#fff" }
+                        : { backgroundColor: theme.cardBg, color: theme.textDim }
+                    }
+                  >
+                    ✏️ 場所を入力
+                  </button>
                 </div>
+                {!useGPSStart && (
+                  <input
+                    type="text"
+                    value={startLocationInput}
+                    onChange={(e) => setStartLocationInput(e.target.value)}
+                    placeholder="出発地点を入力（例：新宿駅）"
+                    className="w-full px-4 py-3 rounded-xl text-sm tracking-wide bg-transparent focus:outline-none placeholder:opacity-40"
+                    style={{
+                      border: `1px solid ${theme.cardBorder}`,
+                      color: theme.textPrimary,
+                      backgroundColor: theme.cardBg,
+                    }}
+                  />
+                )}
               </div>
 
               {/* Time mode selector */}
@@ -451,7 +546,7 @@ export default function HomePage() {
                   className="text-[9px] tracking-[0.4em] uppercase text-center mb-2"
                   style={{ color: theme.textDim }}
                 >
-                  制限時間
+                  目安の時間
                 </p>
                 <div
                   className="grid grid-cols-4 rounded-xl overflow-hidden"
@@ -515,15 +610,68 @@ export default function HomePage() {
                     boxShadow: `0 10px 15px -3px ${theme.accentShadow}`,
                   }}
                 >
-                  お散歩をスタートする
+                  {destinationInput.trim() ? "ルートを構成してスタート" : "ランダムに出発"}
                 </button>
                 <p
                   className="text-[10px] tracking-wider"
                   style={{ color: theme.textDimmer }}
                 >
-                  ランダムな目的地へ出発
+                  {destinationInput.trim()
+                    ? `→ ${destinationInput}`
+                    : "ランダムな目的地へ出発"}
                 </p>
               </div>
+            </div>
+          )}
+
+          {/* ── ROUTING ── */}
+          {walkState === "routing" && (
+            <div className="flex flex-col items-center gap-6 w-full">
+              <CompassArrow rotation={0} searching theme={theme} />
+
+              <div className="flex flex-col items-center gap-3 text-center">
+                <p
+                  className="text-[10px] tracking-[0.45em] uppercase animate-pulse"
+                  style={{ color: theme.textDim }}
+                >
+                  ルートを構成中...
+                </p>
+
+                {destinationInput && (
+                  <div
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm tracking-wider"
+                    style={{
+                      background: theme.cardBg,
+                      border: `1px solid ${theme.accentColor}55`,
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    <span style={{ color: theme.accentColor }}>→</span>
+                    <span>{destinationInput}</span>
+                  </div>
+                )}
+
+                {!useGPSStart && startLocationInput && (
+                  <p className="text-[10px] tracking-wider" style={{ color: theme.textDimmer }}>
+                    出発: {startLocationInput}
+                  </p>
+                )}
+
+                <p className="text-[10px] tracking-wider" style={{ color: theme.textDimmer }}>
+                  AIがあなたの散歩ルートを生成しています
+                </p>
+              </div>
+
+              <button
+                onClick={() => setWalkState("idle")}
+                className="px-6 py-2 rounded-full text-xs tracking-[0.3em] transition-colors"
+                style={{
+                  border: `1px solid ${theme.cardBorder}`,
+                  color: theme.textDimmer,
+                }}
+              >
+                キャンセル
+              </button>
             </div>
           )}
 
@@ -541,12 +689,11 @@ export default function HomePage() {
                   </button>
                 )}
 
-              {/* Arrow area: particles + aurora + radar rings + swing arrow */}
+              {/* Arrow area */}
               <div
                 className="relative flex items-center justify-center"
                 style={{ width: ARROW_SIZE, height: ARROW_SIZE }}
               >
-                {/* z=0 — orbit particles */}
                 <CompassParticles
                   arrowRotation={arrowRotation}
                   speed={geo.speed ?? 0}
@@ -554,7 +701,6 @@ export default function HomePage() {
                   theme={theme}
                 />
 
-                {/* z=2 — aurora glow ring (only when time limit is set) */}
                 {timeLimitSeconds !== null && (
                   <AuroraRing
                     arrowRotation={arrowRotation}
@@ -563,7 +709,6 @@ export default function HomePage() {
                   />
                 )}
 
-                {/* z=auto — radar expand rings */}
                 {[0, 1, 2].map((i) => (
                   <div
                     key={i}
@@ -581,7 +726,6 @@ export default function HomePage() {
                   />
                 ))}
 
-                {/* z=4 — swing direction arrow (replaces big compass needle) */}
                 <div className="absolute inset-0 flex items-center justify-center" style={{ zIndex: 4 }}>
                   <SwingArrow
                     rotation={arrowRotation}
@@ -602,7 +746,6 @@ export default function HomePage() {
                 >
                   {formatDistance(distance)}
                 </div>
-                {/* Waypoint name or fallback label */}
                 <p
                   className="text-[10px] tracking-[0.3em] mt-2"
                   style={{ color: theme.textDim }}
@@ -749,7 +892,6 @@ export default function HomePage() {
         <footer className="relative z-10 flex flex-col items-center gap-3 w-full">
           {walkState === "walking" && (
             <div className="flex flex-col items-center gap-3 w-full">
-              {/* Time display row */}
               <div className="flex items-center justify-center gap-6">
                 <div className="flex flex-col items-center">
                   <span
@@ -799,7 +941,6 @@ export default function HomePage() {
             </div>
           )}
 
-          {/* Debug row */}
           <div
             className="flex gap-4 text-[10px] tabular-nums"
             style={{ color: theme.cardBorder }}
@@ -840,7 +981,6 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Bottom nav — hidden during walking to prevent mid-walk screen switches */}
       {walkState !== "walking" && (
         <BottomNav activeTab={activeScreen} onTabChange={setActiveScreen} theme={theme} />
       )}
