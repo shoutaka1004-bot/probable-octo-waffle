@@ -43,7 +43,7 @@ interface Destination {
 
 const ARRIVAL_THRESHOLD_M = 20;
 const ARROW_SIZE = 280;
-const ROUTING_TIMEOUT_MS = 20_000;
+const ROUTING_TIMEOUT_MS = 60_000;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);

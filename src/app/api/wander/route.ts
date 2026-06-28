@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+
+// GET /api/wander — health check (visit in browser to verify env var is set)
+export async function GET() {
+  return NextResponse.json({ hasKey: !!process.env.GEMINI_API_KEY });
+}
 
 interface Waypoint {
   lat: number;
