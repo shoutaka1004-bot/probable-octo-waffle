@@ -1,102 +1,113 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { calculateDistance } from "@/lib/geo";
+import { useState, useEffect, useRef } from "react";
 
-const FETCH_DISTANCE_M = 150;      // 150m 移動で再取得
-const INITIAL_DELAY_MS = 20_000;   // 歩行開始20秒後に初回取得
-const FALLBACK_INTERVAL_MS = 180_000; // 3分移動がなければ再取得
+const INITIAL_DELAY_MS = 8_000;   // 歩行開始8秒後にフェッチ
+const TRIVIA_STEP_M    = 150;     // 150mごとに次のtriviaへ
+
+interface LoreData {
+  areaName: string;
+  routeTheme: string;
+  triviaList: string[];
+}
+
+export interface AILoreResult {
+  areaName: string | null;
+  currentMessage: string | null;
+  messageLabel: "route" | "trivia";
+  isLoadingLore: boolean;
+}
 
 export function useAILore(
   isActive: boolean,
   lat: number | null,
-  lng: number | null
-): { aiLore: string | null; isLoadingLore: boolean } {
-  const [aiLore, setAiLore] = useState<string | null>(null);
+  lng: number | null,
+  totalDistanceMeters: number
+): AILoreResult {
+  const [lore, setLore] = useState<LoreData | null>(null);
   const [isLoadingLore, setIsLoadingLore] = useState(false);
+  const [triviaIndex, setTriviaIndex] = useState(0);
 
   const latRef = useRef(lat);
   const lngRef = useRef(lng);
-  const lastFetchPos = useRef<{ lat: number; lng: number } | null>(null);
-  const lastFetchTime = useRef<number>(0);
-  const isFetching = useRef(false);
+  const hasFetched = useRef(false);
+  const lastStepM = useRef(0);
 
   useEffect(() => { latRef.current = lat; }, [lat]);
   useEffect(() => { lngRef.current = lng; }, [lng]);
 
-  const fetchLore = useCallback(async (fetchLat: number, fetchLng: number) => {
-    if (isFetching.current) return;
-    isFetching.current = true;
-    setIsLoadingLore(true);
-    lastFetchPos.current = { lat: fetchLat, lng: fetchLng };
-    lastFetchTime.current = Date.now();
-
-    try {
-      const res = await fetch("/api/wander", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: fetchLat, lng: fetchLng }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.message) setAiLore(data.message);
-      }
-    } catch {
-      // ネットワークエラーは無視
-    } finally {
-      isFetching.current = false;
-      setIsLoadingLore(false);
-    }
-  }, []);
-
-  // 歩行開始 / 終了ライフサイクル
+  // ── Reset & fetch on walk start ──
   useEffect(() => {
     if (!isActive) {
-      lastFetchPos.current = null;
-      lastFetchTime.current = 0;
-      isFetching.current = false;
-      setAiLore(null);
+      hasFetched.current = false;
+      lastStepM.current = 0;
+      setLore(null);
+      setTriviaIndex(0);
       setIsLoadingLore(false);
       return;
     }
 
-    // 初回: 20秒後
-    const initial = setTimeout(() => {
-      if (latRef.current !== null && lngRef.current !== null) {
-        fetchLore(latRef.current, lngRef.current);
+    const timer = setTimeout(async () => {
+      if (hasFetched.current) return;
+      const curLat = latRef.current;
+      const curLng = lngRef.current;
+      if (curLat === null || curLng === null) return;
+
+      hasFetched.current = true;
+      setIsLoadingLore(true);
+
+      try {
+        const res = await fetch("/api/wander", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lat: curLat, lng: curLng }),
+        });
+        if (res.ok) {
+          const data: LoreData = await res.json();
+          if (data.areaName) setLore(data);
+        }
+      } catch {
+        // silent
+      } finally {
+        setIsLoadingLore(false);
       }
     }, INITIAL_DELAY_MS);
 
-    // フォールバック: 30秒ごとにチェックし、3分経過していれば再取得
-    const fallback = setInterval(() => {
-      if (isFetching.current) return;
-      if (latRef.current === null || lngRef.current === null) return;
-      if (Date.now() - lastFetchTime.current < FALLBACK_INTERVAL_MS) return;
-      fetchLore(latRef.current, lngRef.current);
-    }, 30_000);
+    return () => clearTimeout(timer);
+  }, [isActive]);
 
-    return () => {
-      clearTimeout(initial);
-      clearInterval(fallback);
-    };
-  }, [isActive, fetchLore]);
-
-  // 距離ベーストリガー
+  // ── Advance trivia index every TRIVIA_STEP_M ──
   useEffect(() => {
-    if (!isActive || lat === null || lng === null) return;
-    if (lastFetchPos.current === null) return;
-    if (isFetching.current) return;
+    if (!lore?.triviaList.length) return;
+    const maxIndex = lore.triviaList.length - 1;
+    if (triviaIndex >= maxIndex) return;
 
-    const dist = calculateDistance(
-      lastFetchPos.current.lat,
-      lastFetchPos.current.lng,
-      lat,
-      lng
-    );
-    if (dist >= FETCH_DISTANCE_M) {
-      fetchLore(lat, lng);
+    const nextTrigger = lastStepM.current + TRIVIA_STEP_M;
+    if (totalDistanceMeters >= nextTrigger) {
+      lastStepM.current = totalDistanceMeters;
+      setTriviaIndex((i) => Math.min(i + 1, maxIndex));
     }
-  }, [lat, lng, isActive, fetchLore]);
+  }, [totalDistanceMeters, lore, triviaIndex]);
 
-  return { aiLore, isLoadingLore };
+  // ── Build output ──
+  // triviaIndex 0 → show routeTheme, 1+ → show triviaList[index-1]
+  let currentMessage: string | null = null;
+  let messageLabel: "route" | "trivia" = "route";
+
+  if (lore) {
+    if (triviaIndex === 0) {
+      currentMessage = lore.routeTheme;
+      messageLabel = "route";
+    } else {
+      currentMessage = lore.triviaList[triviaIndex - 1] ?? lore.routeTheme;
+      messageLabel = "trivia";
+    }
+  }
+
+  return {
+    areaName: lore?.areaName ?? null,
+    currentMessage,
+    messageLabel,
+    isLoadingLore,
+  };
 }

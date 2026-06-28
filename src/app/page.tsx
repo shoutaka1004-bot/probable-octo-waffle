@@ -94,7 +94,12 @@ export default function HomePage() {
     geo.speed ?? 0,
     new Date().getHours() >= 19,
   );
-  const { aiLore, isLoadingLore } = useAILore(isWalking, geo.latitude, geo.longitude);
+  const { areaName, currentMessage, messageLabel, isLoadingLore } = useAILore(
+    isWalking,
+    geo.latitude,
+    geo.longitude,
+    stats.totalDistanceMeters
+  );
 
   // Refs so effects can read latest values without stale closures
   const statsRef = useRef(stats);
@@ -584,14 +589,29 @@ export default function HomePage() {
                 </p>
               </div>
 
+              {/* Area name pill */}
+              {areaName && (
+                <div
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] tracking-wider"
+                  style={{
+                    background: "rgba(167,139,250,0.12)",
+                    border: "1px solid rgba(167,139,250,0.25)",
+                    color: "rgba(196,181,253,0.75)",
+                  }}
+                >
+                  <span>📍</span>
+                  <span>{areaName}</span>
+                </div>
+              )}
+
               {/* Hint / lore (AI or static) */}
-              {(isLoadingLore || aiLore || hint) && (
+              {(isLoadingLore || currentMessage || hint) && (
                 <div
                   key={
                     isLoadingLore
                       ? "ai-loading"
-                      : aiLore
-                      ? `ai:${aiLore.slice(0, 16)}`
+                      : currentMessage
+                      ? `ai:${messageLabel}:${currentMessage.slice(0, 16)}`
                       : (hint ?? "")
                   }
                   className="w-full max-w-xs"
@@ -603,17 +623,21 @@ export default function HomePage() {
                       background: theme.cardBg + "99",
                       border: `1px solid ${theme.cardBorder}`,
                       borderLeft:
-                        isLoadingLore || aiLore || hintType === "lore"
+                        isLoadingLore || currentMessage || hintType === "lore"
                           ? "2px solid rgba(167,139,250,0.6)"
                           : `2px solid ${theme.hintBorder}`,
                     }}
                   >
-                    {(isLoadingLore || aiLore || hintType === "lore") && (
+                    {(isLoadingLore || currentMessage || hintType === "lore") && (
                       <p
                         className="text-[8px] tracking-[0.45em] uppercase mb-1.5"
                         style={{ color: "rgba(167,139,250,0.65)" }}
                       >
-                        土地の記憶
+                        {isLoadingLore
+                          ? "エリア調査中"
+                          : messageLabel === "route"
+                          ? "ルート案内"
+                          : "豆知識"}
                       </p>
                     )}
                     <p
@@ -622,21 +646,21 @@ export default function HomePage() {
                       }`}
                       style={{
                         color:
-                          isLoadingLore || aiLore || hintType === "lore"
+                          isLoadingLore || currentMessage || hintType === "lore"
                             ? "rgba(196,181,253,0.70)"
                             : theme.hintText,
                       }}
                     >
                       {isLoadingLore
-                        ? "土地の記憶を辿っています..."
-                        : (aiLore ?? hint)}
+                        ? "このエリアを調べています..."
+                        : (currentMessage ?? hint)}
                     </p>
-                    {!isLoadingLore && aiLore && (
+                    {!isLoadingLore && currentMessage && (
                       <p
                         className="text-[8px] mt-1.5"
                         style={{ color: "rgba(167,139,250,0.35)" }}
                       >
-                        ✦ AI生成
+                        ✦ AI
                       </p>
                     )}
                   </div>
