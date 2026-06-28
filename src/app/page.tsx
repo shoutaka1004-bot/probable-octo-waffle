@@ -151,50 +151,25 @@ export default function HomePage() {
     badgesComputedRef.current = false;
     setEarnedBadges([]);
 
-    if (routeMode === "destination" || routeMode === "loop") {
-      // AI generates route → wait for waypoints
-      setWalkState("routing");
-    } else {
-      // Free mode → random immediate start
-      const dest = generateRandomDestination(geo.latitude, geo.longitude, 500, 1000);
-      const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
-      setStartDistance(dist);
-      setDestination(dest);
-      startTracking();
-      setWalkState("walking");
-    }
-  }, [geo.latitude, geo.longitude, startTracking, routeMode]);
-
-  // ── Routing → walking: transition when AI waypoints arrive ──
-  useEffect(() => {
-    if (walkState !== "routing" || waypoints.length === 0) return;
-    const finalWp = waypoints[waypoints.length - 1];
-    const { lat: gLat, lng: gLng } = geoRef.current;
-    const dist =
-      gLat !== null && gLng !== null
-        ? calculateDistance(gLat, gLng, finalWp.lat, finalWp.lng)
-        : 0;
+    // Always start immediately with a random nearby point.
+    // For destination/loop modes, AI route loads in background and retargets when ready.
+    const range: [number, number] = routeMode === "loop" ? [300, 600] : [400, 800];
+    const dest = generateRandomDestination(geo.latitude, geo.longitude, range[0], range[1]);
+    const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
     setStartDistance(dist);
-    setWaypointIndex(0);
-    lastAdvancedRef.current = -1;
-    setDestination({ lat: waypoints[0].lat, lng: waypoints[0].lng });
+    setDestination(dest);
     startTracking();
     setWalkState("walking");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waypoints]);
+  }, [geo.latitude, geo.longitude, startTracking, routeMode]);
 
-  // ── Routing timeout: AI が応答しない場合は idle に戻る ──
-  useEffect(() => {
-    if (walkState !== "routing") return;
-    const timeout = setTimeout(() => {
-      setWalkState("idle");
-    }, ROUTING_TIMEOUT_MS);
-    return () => clearTimeout(timeout);
-  }, [walkState]);
-
-  // ── When AI waypoints arrive during random walk, retarget compass ──
+  // ── When AI waypoints arrive, retarget compass to the AI route ──
   useEffect(() => {
     if (!isWalking || waypoints.length === 0) return;
+    const finalWp = waypoints[waypoints.length - 1];
+    const { lat: gLat, lng: gLng } = geoRef.current;
+    if (gLat !== null && gLng !== null) {
+      setStartDistance(calculateDistance(gLat, gLng, finalWp.lat, finalWp.lng));
+    }
     setWaypointIndex(0);
     lastAdvancedRef.current = -1;
     setDestination({ lat: waypoints[0].lat, lng: waypoints[0].lng });
