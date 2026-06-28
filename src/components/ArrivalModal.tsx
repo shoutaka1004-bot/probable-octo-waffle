@@ -342,7 +342,7 @@ export function ArrivalModal({
             mounted ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"
           }`}
         >
-          <WalkCompanion distanceMeters={totalDistanceMeters} large skinId={companionSkinId} />
+          <WalkCompanion large skinId={companionSkinId} />
         </div>
 
         {/* Route map */}

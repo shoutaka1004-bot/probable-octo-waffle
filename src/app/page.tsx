@@ -671,7 +671,7 @@ export default function HomePage() {
               border: `1px solid ${theme.cardBorder}`,
             }}
           >
-            <WalkCompanion distanceMeters={stats.totalDistanceMeters} skinId={companionSkinId} />
+            <WalkCompanion skinId={companionSkinId} />
           </div>
         )}
 

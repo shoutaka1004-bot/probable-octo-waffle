@@ -333,7 +333,7 @@ export function CollectionScreen({ theme }: Props) {
                       border: `1px solid ${isActive ? theme.accentColor : theme.cardBorder}`,
                     }}
                   >
-                    <WalkCompanion distanceMeters={300} large skinId={skin.id} />
+                    <WalkCompanion large skinId={skin.id} />
                     <p className="text-[11px] font-semibold" style={{ color: theme.textPrimary }}>
                       {skin.emoji} {skin.name}
                     </p>
