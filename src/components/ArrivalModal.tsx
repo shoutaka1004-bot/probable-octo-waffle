@@ -231,6 +231,8 @@ interface ArrivalModalProps {
   estimatedSteps: number;
   routePoints: RoutePoint[];
   earnedBadges: Badge[];
+  earnedPoints?: number;
+  companionSkinId?: string;
   theme?: ThemeConfig;
   onRestart: () => void;
   onFinish: () => void;
@@ -258,6 +260,8 @@ export function ArrivalModal({
   estimatedSteps,
   routePoints,
   earnedBadges,
+  earnedPoints,
+  companionSkinId,
   theme,
   onRestart,
   onFinish,
@@ -338,7 +342,7 @@ export function ArrivalModal({
             mounted ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"
           }`}
         >
-          <WalkCompanion distanceMeters={totalDistanceMeters} large />
+          <WalkCompanion distanceMeters={totalDistanceMeters} large skinId={companionSkinId} />
         </div>
 
         {/* Route map */}
@@ -369,6 +373,30 @@ export function ArrivalModal({
             value={`${estimatedSteps.toLocaleString()} 歩`}
           />
         </div>
+
+        {/* Points earned */}
+        {earnedPoints !== undefined && earnedPoints > 0 && (
+          <div
+            className={`w-full transition-all duration-700 delay-[450ms] ${
+              mounted ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"
+            }`}
+          >
+            <div
+              className="flex items-center justify-center gap-3 rounded-xl py-3"
+              style={{ backgroundColor: `${accent}18`, border: `1px solid ${accent}44` }}
+            >
+              <span className="text-xl">🪙</span>
+              <div>
+                <p className="text-[9px] tracking-widest" style={{ color: accent, opacity: 0.7 }}>
+                  Wコイン獲得
+                </p>
+                <p className="text-lg font-bold tabular-nums" style={{ color: accent }}>
+                  +{earnedPoints}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Badges */}
         {earnedBadges.length > 0 && (

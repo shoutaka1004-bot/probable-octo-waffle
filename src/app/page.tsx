@@ -12,7 +12,8 @@ import {
   formatDistance,
 } from "@/lib/geo";
 import { checkBadges, Badge } from "@/lib/badges";
-import { saveWalkLog, markBadgesEarned } from "@/lib/storage";
+import { saveWalkLog, markBadgesEarned, addPoints, getActiveCompanionSkin, getActiveArrowSkin } from "@/lib/storage";
+import { calcEarnedPoints, getArrowSkin } from "@/lib/shop";
 import {
   THEMES,
   DISTANCE_MODES,
@@ -72,8 +73,18 @@ export default function HomePage() {
   const [destination, setDestination] = useState<Destination | null>(null);
   const [startDistance, setStartDistance] = useState<number | null>(null);
   const [earnedBadges, setEarnedBadges] = useState<Badge[]>([]);
+  const [earnedPoints, setEarnedPoints] = useState(0);
   const badgesComputedRef = useRef(false);
   const lastRelocationRef = useRef<number>(0);
+
+  // ── Active skins ──
+  const [companionSkinId, setCompanionSkinId] = useState("default");
+  const [arrowSkinId, setArrowSkinId] = useState("default");
+
+  const refreshSkins = useCallback(() => {
+    setCompanionSkinId(getActiveCompanionSkin());
+    setArrowSkinId(getActiveArrowSkin());
+  }, []);
 
   const isWalking = walkState === "walking";
   const { stats, startTracking } = useWalkTracker(geo.latitude, geo.longitude, isWalking);
@@ -94,6 +105,9 @@ export default function HomePage() {
   useEffect(() => { timeModeRef.current = timeMode; }, [timeMode]);
 
   const theme: ThemeConfig = THEMES[themeId];
+
+  // ── Load skins on mount ──
+  useEffect(() => { refreshSkins(); }, [refreshSkins]);
 
   // ── Persist preferences ──
   useEffect(() => {
@@ -180,6 +194,9 @@ export default function HomePage() {
     if (!badgesComputedRef.current) {
       badgesComputedRef.current = true;
       const s = statsRef.current;
+      const pts = calcEarnedPoints(s.totalDistanceMeters);
+      addPoints(pts);
+      setEarnedPoints(pts);
       const earned = checkBadges({
         totalDistanceMeters: s.totalDistanceMeters,
         straightLineMeters: startDistance ?? 0,
@@ -218,6 +235,8 @@ export default function HomePage() {
 
   const gpsReady = !geo.loading && geo.latitude !== null && geo.error === null;
 
+  const activeArrowSkin = getArrowSkin(arrowSkinId);
+
   // ── Radar pulse config ──
   const pulseDur =
     distance !== null
@@ -234,7 +253,11 @@ export default function HomePage() {
     return (
       <>
         <CollectionScreen theme={theme} />
-        <BottomNav activeTab={activeScreen} onTabChange={setActiveScreen} theme={theme} />
+        <BottomNav
+          activeTab={activeScreen}
+          onTabChange={(tab) => { setActiveScreen(tab); if (tab === "compass") refreshSkins(); }}
+          theme={theme}
+        />
       </>
     );
   }
@@ -538,7 +561,8 @@ export default function HomePage() {
                     rotation={arrowRotation}
                     timeProgress={timeProgress}
                     timeLimitSeconds={timeLimitSeconds}
-                    baseColor={theme.particleColor}
+                    baseColor={arrowSkinId !== "default" ? activeArrowSkin.baseColor : theme.particleColor}
+                    arrowVariant={activeArrowSkin.variant}
                     size={ARROW_SIZE}
                   />
                 </div>
@@ -647,7 +671,7 @@ export default function HomePage() {
               border: `1px solid ${theme.cardBorder}`,
             }}
           >
-            <WalkCompanion distanceMeters={stats.totalDistanceMeters} />
+            <WalkCompanion distanceMeters={stats.totalDistanceMeters} skinId={companionSkinId} />
           </div>
         )}
 
@@ -737,6 +761,8 @@ export default function HomePage() {
             estimatedSteps={stats.estimatedSteps}
             routePoints={stats.routePoints}
             earnedBadges={earnedBadges}
+            earnedPoints={earnedPoints}
+            companionSkinId={companionSkinId}
             theme={theme}
             onRestart={handleStart}
             onFinish={() => { setDestination(null); setWalkState("idle"); }}

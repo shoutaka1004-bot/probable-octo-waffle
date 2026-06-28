@@ -1,9 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { getEarnedBadgeIds, getWalkLogs, WalkLog } from "@/lib/storage";
+import { useState, useEffect, useCallback } from "react";
+import {
+  getEarnedBadgeIds, getWalkLogs, WalkLog,
+  getAvailablePoints, isSkinUnlocked, unlockSkin, spendPoints,
+  getActiveCompanionSkin, getActiveArrowSkin, setActiveCompanionSkin, setActiveArrowSkin,
+} from "@/lib/storage";
+import { COMPANION_SKINS, ARROW_SKINS } from "@/lib/shop";
 import { ALL_BADGES, Badge } from "@/lib/badges";
 import { RouteCanvas } from "./RouteCanvas";
+import { WalkCompanion } from "./WalkCompanion";
 import { ThemeConfig } from "@/lib/theme";
 
 const HEX_OUTER = "M32 2 L60 18 L60 54 L32 70 L4 54 L4 18 Z";
@@ -38,7 +44,7 @@ function formatDist(meters: number): string {
   return `${Math.round(meters)}m`;
 }
 
-type CollectionTab = "badges" | "logs";
+type CollectionTab = "badges" | "logs" | "shop";
 
 interface Props {
   theme: ThemeConfig;
@@ -51,10 +57,43 @@ export function CollectionScreen({ theme }: Props) {
   const [selectedBadge, setSelectedBadge] = useState<Badge | null>(null);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
 
+  // Shop state
+  const [points, setPoints] = useState(0);
+  const [unlockedSkins, setUnlockedSkins] = useState<string[]>(["default"]);
+  const [activeCompanion, setActiveCompanionState] = useState("default");
+  const [activeArrow, setActiveArrowState] = useState("default");
+
+  const refreshShop = useCallback(() => {
+    setPoints(getAvailablePoints());
+    setUnlockedSkins(["default", ...COMPANION_SKINS.filter(s => s.id !== "default" && isSkinUnlocked(s.id)).map(s => s.id),
+                      ...ARROW_SKINS.filter(s => s.id !== "default" && isSkinUnlocked(s.id)).map(s => s.id)]);
+    setActiveCompanionState(getActiveCompanionSkin());
+    setActiveArrowState(getActiveArrowSkin());
+  }, []);
+
   useEffect(() => {
     setEarnedIds(getEarnedBadgeIds());
     setLogs(getWalkLogs());
-  }, []);
+    refreshShop();
+  }, [refreshShop]);
+
+  const handleBuyOrEquipCompanion = (id: string, cost: number) => {
+    if (!isSkinUnlocked(id)) {
+      if (!spendPoints(cost)) return;
+      unlockSkin(id);
+    }
+    setActiveCompanionSkin(id);
+    refreshShop();
+  };
+
+  const handleBuyOrEquipArrow = (id: string, cost: number) => {
+    if (!isSkinUnlocked(id)) {
+      if (!spendPoints(cost)) return;
+      unlockSkin(id);
+    }
+    setActiveArrowSkin(id);
+    refreshShop();
+  };
 
   const allBadges = Object.values(ALL_BADGES);
 
@@ -84,10 +123,10 @@ export function CollectionScreen({ theme }: Props) {
         className="mx-6 mb-6 flex rounded-xl overflow-hidden relative z-10"
         style={{ border: `1px solid ${theme.cardBorder}` }}
       >
-        {(["badges", "logs"] as CollectionTab[]).map((tab) => (
+        {(["badges", "logs", "shop"] as CollectionTab[]).map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => { setActiveTab(tab); if (tab === "shop") refreshShop(); }}
             className="flex-1 py-2.5 text-xs tracking-wider transition-colors"
             style={
               activeTab === tab
@@ -95,7 +134,7 @@ export function CollectionScreen({ theme }: Props) {
                 : { backgroundColor: "transparent", color: theme.textDim }
             }
           >
-            {tab === "badges" ? "🏅 バッジ図鑑" : "📜 迷走の記憶"}
+            {tab === "badges" ? "🏅 バッジ" : tab === "logs" ? "📜 記録" : "🛒 ショップ"}
           </button>
         ))}
       </div>
@@ -246,6 +285,163 @@ export function CollectionScreen({ theme }: Props) {
               );
             })
           )}
+        </div>
+      )}
+
+      {/* ── Shop tab ── */}
+      {activeTab === "shop" && (
+        <div className="px-6 pb-6 flex flex-col gap-6 relative z-10">
+          {/* Points display */}
+          <div
+            className="flex items-center justify-between rounded-xl px-5 py-4"
+            style={{ backgroundColor: theme.cardBg, border: `1px solid ${theme.cardBorder}` }}
+          >
+            <div>
+              <p className="text-[9px] tracking-[0.4em] uppercase" style={{ color: theme.textDim }}>
+                Wコイン
+              </p>
+              <p className="text-2xl font-bold tabular-nums" style={{ color: theme.accentColor }}>
+                {points.toLocaleString()}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[9px]" style={{ color: theme.textDimmer }}>
+                100m歩く = 10コイン
+              </p>
+              <p className="text-[9px] mt-0.5" style={{ color: theme.textDimmer }}>
+                お散歩するたびに貯まる
+              </p>
+            </div>
+          </div>
+
+          {/* Companion skins */}
+          <div>
+            <p className="text-[9px] tracking-[0.4em] uppercase mb-3" style={{ color: theme.textDim }}>
+              コンパニオン
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {COMPANION_SKINS.map((skin) => {
+                const owned = isSkinUnlocked(skin.id);
+                const canAfford = points >= skin.cost;
+                const isActive = activeCompanion === skin.id;
+                return (
+                  <div
+                    key={skin.id}
+                    className="rounded-xl p-3 flex flex-col items-center gap-2"
+                    style={{
+                      backgroundColor: theme.cardBg,
+                      border: `1px solid ${isActive ? theme.accentColor : theme.cardBorder}`,
+                    }}
+                  >
+                    <WalkCompanion distanceMeters={300} large skinId={skin.id} />
+                    <p className="text-[11px] font-semibold" style={{ color: theme.textPrimary }}>
+                      {skin.emoji} {skin.name}
+                    </p>
+                    <p className="text-[9px]" style={{ color: theme.textDimmer }}>{skin.desc}</p>
+                    {isActive ? (
+                      <span
+                        className="text-[10px] px-3 py-1 rounded-full"
+                        style={{ backgroundColor: theme.accentColor + "22", color: theme.accentColor }}
+                      >
+                        ✦ 装備中
+                      </span>
+                    ) : owned ? (
+                      <button
+                        onClick={() => handleBuyOrEquipCompanion(skin.id, skin.cost)}
+                        className="text-[10px] px-3 py-1 rounded-full transition-colors"
+                        style={{ border: `1px solid ${theme.cardBorder}`, color: theme.textDim }}
+                      >
+                        装備する
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleBuyOrEquipCompanion(skin.id, skin.cost)}
+                        disabled={!canAfford}
+                        className="text-[10px] px-3 py-1 rounded-full transition-colors"
+                        style={{
+                          backgroundColor: canAfford ? theme.accentColor : "transparent",
+                          border: `1px solid ${canAfford ? theme.accentColor : theme.cardBorder}`,
+                          color: canAfford ? "#fff" : theme.textDimmer,
+                          opacity: canAfford ? 1 : 0.5,
+                        }}
+                      >
+                        {skin.cost} コイン
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Arrow skins */}
+          <div>
+            <p className="text-[9px] tracking-[0.4em] uppercase mb-3" style={{ color: theme.textDim }}>
+              やじるし
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {ARROW_SKINS.map((skin) => {
+                const owned = isSkinUnlocked(skin.id);
+                const canAfford = points >= skin.cost;
+                const isActive = activeArrow === skin.id;
+                const [r, g, b] = skin.baseColor;
+                return (
+                  <div
+                    key={skin.id}
+                    className="rounded-xl p-3 flex flex-col items-center gap-2"
+                    style={{
+                      backgroundColor: theme.cardBg,
+                      border: `1px solid ${isActive ? theme.accentColor : theme.cardBorder}`,
+                    }}
+                  >
+                    {/* Arrow color preview */}
+                    <div
+                      className="w-14 h-14 rounded-full flex items-center justify-center text-3xl"
+                      style={{ backgroundColor: `rgba(${r},${g},${b},0.12)` }}
+                    >
+                      <span style={{ filter: `drop-shadow(0 0 6px rgba(${r},${g},${b},0.8))` }}>
+                        {skin.emoji}
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-semibold" style={{ color: theme.textPrimary }}>
+                      {skin.name}
+                    </p>
+                    <p className="text-[9px]" style={{ color: theme.textDimmer }}>{skin.desc}</p>
+                    {isActive ? (
+                      <span
+                        className="text-[10px] px-3 py-1 rounded-full"
+                        style={{ backgroundColor: theme.accentColor + "22", color: theme.accentColor }}
+                      >
+                        ✦ 装備中
+                      </span>
+                    ) : owned ? (
+                      <button
+                        onClick={() => handleBuyOrEquipArrow(skin.id, skin.cost)}
+                        className="text-[10px] px-3 py-1 rounded-full transition-colors"
+                        style={{ border: `1px solid ${theme.cardBorder}`, color: theme.textDim }}
+                      >
+                        装備する
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleBuyOrEquipArrow(skin.id, skin.cost)}
+                        disabled={!canAfford}
+                        className="text-[10px] px-3 py-1 rounded-full transition-colors"
+                        style={{
+                          backgroundColor: canAfford ? theme.accentColor : "transparent",
+                          border: `1px solid ${canAfford ? theme.accentColor : theme.cardBorder}`,
+                          color: canAfford ? "#fff" : theme.textDimmer,
+                          opacity: canAfford ? 1 : 0.5,
+                        }}
+                      >
+                        {skin.cost} コイン
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 

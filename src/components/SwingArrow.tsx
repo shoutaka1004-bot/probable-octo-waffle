@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect } from "react";
+import type { ArrowVariant } from "@/lib/shop";
 
 function progressToRGB(p: number): [number, number, number] {
   if (p < 0.5) {
@@ -21,6 +22,7 @@ interface Props {
   timeLimitSeconds: number | null;
   baseColor?: [number, number, number];
   size?: number;
+  arrowVariant?: ArrowVariant;
 }
 
 export function SwingArrow({
@@ -29,6 +31,7 @@ export function SwingArrow({
   timeLimitSeconds,
   baseColor = [34, 211, 238],
   size = 240,
+  arrowVariant = "normal",
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rotRef = useRef(rotation);
@@ -48,23 +51,39 @@ export function SwingArrow({
     const cx = size / 2;
     const cy = size / 2;
 
-    // Arrow shape constants
-    const totalH  = size * 0.38;   // center → tip distance
-    const tailH   = size * 0.12;   // center → tail end distance
-    const headH   = size * 0.17;   // arrowhead height
-    const headHW  = size * 0.115;  // arrowhead half-width
-    const shaftHW = size * 0.028;  // shaft half-width
-    const shoulder = size * 0.016; // shoulder rounding offset
+    // Shape constants vary by variant
+    const totalH = size * 0.38;
+    const tailH  = size * 0.12;
+
+    const headHFactor  = arrowVariant === "slim" ? 0.22  : arrowVariant === "wide" ? 0.14  : 0.17;
+    const headHWFactor = arrowVariant === "slim" ? 0.065 : arrowVariant === "wide" ? 0.16  : 0.115;
+    const shaftFactor  = arrowVariant === "slim" ? 0.014 : arrowVariant === "wide" ? 0.045 : 0.028;
+    const shoulderF    = arrowVariant === "slim" ? 0.008 : arrowVariant === "wide" ? 0.02  : 0.016;
+
+    const headH   = size * headHFactor;
+    const headHW  = size * headHWFactor;
+    const shaftHW = size * shaftFactor;
+    const shoulder = size * shoulderF;
 
     const drawPath = () => {
+      if (arrowVariant === "leaf") {
+        // Bezier leaf / feather shape
+        const hw = size * 0.13;
+        ctx.beginPath();
+        ctx.moveTo(0, -totalH);
+        ctx.bezierCurveTo( hw * 1.5, -totalH + totalH * 0.55,  hw * 1.2, tailH - size * 0.04, 0, tailH);
+        ctx.bezierCurveTo(-hw * 1.2, tailH - size * 0.04, -hw * 1.5, -totalH + totalH * 0.55, 0, -totalH);
+        ctx.closePath();
+        return;
+      }
       ctx.beginPath();
-      ctx.moveTo(0, -totalH);                            // tip
-      ctx.lineTo(headHW, -totalH + headH);               // right head corner
-      ctx.lineTo(shaftHW, -totalH + headH + shoulder);   // right shoulder
-      ctx.lineTo(shaftHW, tailH);                        // bottom right
-      ctx.lineTo(-shaftHW, tailH);                       // bottom left
-      ctx.lineTo(-shaftHW, -totalH + headH + shoulder);  // left shoulder
-      ctx.lineTo(-headHW, -totalH + headH);              // left head corner
+      ctx.moveTo(0, -totalH);
+      ctx.lineTo(headHW, -totalH + headH);
+      ctx.lineTo(shaftHW, -totalH + headH + shoulder);
+      ctx.lineTo(shaftHW, tailH);
+      ctx.lineTo(-shaftHW, tailH);
+      ctx.lineTo(-shaftHW, -totalH + headH + shoulder);
+      ctx.lineTo(-headHW, -totalH + headH);
       ctx.closePath();
     };
 
@@ -154,7 +173,7 @@ export function SwingArrow({
 
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [size, timeLimitSeconds, baseColor]);
+  }, [size, timeLimitSeconds, baseColor, arrowVariant]);
 
   return (
     <canvas
