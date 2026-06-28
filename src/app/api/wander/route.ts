@@ -27,6 +27,7 @@ export async function POST(req: NextRequest) {
   let destinationName = "";
   let timeMinutes: number | null = null;
   let loopMode = false;
+  let firstOnly = false;
 
   try {
     const body = await req.json();
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
     if (typeof body.destinationName === "string") destinationName = body.destinationName.trim();
     if (typeof body.timeMinutes === "number" && body.timeMinutes > 0) timeMinutes = body.timeMinutes;
     if (typeof body.loopMode === "boolean") loopMode = body.loopMode;
+    if (typeof body.firstOnly === "boolean") firstOnly = body.firstOnly;
   } catch {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
@@ -46,6 +48,25 @@ export async function POST(req: NextRequest) {
 
   let systemInstruction: string;
   let userPrompt: string;
+  let maxOutputTokens = 800;
+
+  if (firstOnly) {
+    const locationDesc = startName
+      ? `出発地: ${startName}`
+      : lat !== null && lng !== null
+      ? `座標: 緯度${lat.toFixed(5)}, 経度${lng.toFixed(5)}`
+      : "場所: 不明";
+    const destHint = destinationName ? `\n向かっている方向の目安: ${destinationName}` : "";
+
+    systemInstruction =
+      "あなたは地域案内者です。" +
+      "与えられた出発地から徒歩5〜15分（300〜1000m）以内にある最も特徴的なスポットを1箇所だけ選んでください。" +
+      "実在する公園・神社・寺・史跡・通り・商店街・広場など個性ある場所のみ。架空の場所は禁止。" +
+      "JSONのみ返すこと（コードブロック禁止）。" +
+      '形式: {"areaName":"エリア名（20文字以内）","waypoints":[{"lat":35.xxxxx,"lng":139.xxxxx,"name":"スポット名（15文字以内）","trivia":"豆知識（40文字以内）"}]}';
+    userPrompt = `${locationDesc}${destHint}\n最も近くの特徴的なスポットを1箇所だけ返してください。`;
+    maxOutputTokens = 200;
+  } else
 
   if (destinationName) {
     const startDesc = startName
@@ -110,7 +131,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemInstruction }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: 800, temperature: 0.4 },
+        generationConfig: { maxOutputTokens: maxOutputTokens, temperature: 0.4 },
       }),
     });
 

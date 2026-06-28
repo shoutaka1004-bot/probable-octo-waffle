@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 
-const RANDOM_FETCH_DELAY_MS = 5_000;
 const DEST_FETCH_DELAY_MS = 500;
+const FREE_FETCH_DELAY_MS = 5_000;
 
 export interface Waypoint {
   lat: number;
@@ -56,7 +56,9 @@ export function useAIRoute(
     }
 
     const hasDestination = destinationName.trim().length > 0 || loopMode;
-    const delay = hasDestination ? DEST_FETCH_DELAY_MS : RANDOM_FETCH_DELAY_MS;
+    const delay = hasDestination ? DEST_FETCH_DELAY_MS : FREE_FETCH_DELAY_MS;
+
+    let cancelled = false;
 
     const timer = setTimeout(async () => {
       if (hasFetched.current) return;
@@ -72,9 +74,9 @@ export function useAIRoute(
       if (loop && (curLat === null || curLng === null)) return;
 
       hasFetched.current = true;
-      setIsLoadingRoute(true);
+      if (!cancelled) setIsLoadingRoute(true);
 
-      try {
+      const buildBody = (firstOnly: boolean) => {
         const body: Record<string, unknown> = {};
         if (curLat !== null) body.lat = curLat;
         if (curLng !== null) body.lng = curLng;
@@ -82,27 +84,76 @@ export function useAIRoute(
         if (start) body.startName = start;
         if (mins !== null) body.timeMinutes = mins;
         if (loop) body.loopMode = true;
+        if (firstOnly) body.firstOnly = true;
+        return body;
+      };
 
+      const doFetch = async (firstOnly: boolean) => {
         const res = await fetch("/api/wander", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(buildBody(firstOnly)),
         });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.areaName) setAreaName(data.areaName);
-          if (Array.isArray(data.waypoints) && data.waypoints.length > 0) {
-            setWaypoints(data.waypoints as Waypoint[]);
+        if (!res.ok) return null;
+        return res.json() as Promise<{ areaName?: string; waypoints?: Waypoint[] }>;
+      };
+
+      if (hasDestination) {
+        // Launch both in parallel: stage 1 (fast first checkpoint) + stage 2 (full route)
+        const stage1Promise = doFetch(true);
+        const stage2Promise = doFetch(false);
+
+        // Stage 1: start walking as soon as first checkpoint arrives
+        try {
+          const data = await stage1Promise;
+          if (!cancelled && Array.isArray(data?.waypoints) && data.waypoints.length > 0) {
+            if (data.areaName) setAreaName(data.areaName);
+            setWaypoints(data.waypoints);
           }
+        } catch {
+          // stage 1 failed, fall through — stage 2 still in flight
         }
-      } catch {
-        // silent
-      } finally {
-        setIsLoadingRoute(false);
+        if (!cancelled) setIsLoadingRoute(false);
+
+        // Stage 2: silently upgrade to full route while user is already walking
+        try {
+          const data = await stage2Promise;
+          if (!cancelled && Array.isArray(data?.waypoints) && data.waypoints.length > 0) {
+            setWaypoints(data.waypoints);
+            if (data.areaName) setAreaName(data.areaName);
+          }
+        } catch {
+          // silent
+        }
+      } else {
+        // Free mode: single fetch, no first-checkpoint fast path needed
+        try {
+          const res = await fetch("/api/wander", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildBody(false)),
+          });
+          if (res.ok) {
+            const data = await res.json() as { areaName?: string; waypoints?: Waypoint[] };
+            if (!cancelled) {
+              if (data.areaName) setAreaName(data.areaName);
+              if (Array.isArray(data.waypoints) && data.waypoints.length > 0) {
+                setWaypoints(data.waypoints);
+              }
+            }
+          }
+        } catch {
+          // silent
+        } finally {
+          if (!cancelled) setIsLoadingRoute(false);
+        }
       }
     }, delay);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive]);
 
