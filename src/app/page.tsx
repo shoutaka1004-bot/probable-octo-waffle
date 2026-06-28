@@ -34,7 +34,7 @@ import { CollectionScreen } from "@/components/CollectionScreen";
 import { EventPopup } from "@/components/EventPopup";
 import { useWalkEvents } from "@/hooks/useWalkEvents";
 import { useAmbientBGM } from "@/hooks/useAmbientBGM";
-import { useAILore } from "@/hooks/useAILore";
+import { useAIRoute, Waypoint } from "@/hooks/useAIRoute";
 
 type WalkState = "idle" | "walking" | "arrived";
 
@@ -77,6 +77,10 @@ export default function HomePage() {
   const badgesComputedRef = useRef(false);
   const lastRelocationRef = useRef<number>(0);
 
+  // ── Waypoint navigation ──
+  const [waypointIndex, setWaypointIndex] = useState(0);
+  const lastAdvancedRef = useRef(-1); // prevents double-trigger on same waypoint
+
   // ── Active skins ──
   const [companionSkinId, setCompanionSkinId] = useState("default");
   const [arrowSkinId, setArrowSkinId] = useState("default");
@@ -94,12 +98,7 @@ export default function HomePage() {
     geo.speed ?? 0,
     new Date().getHours() >= 19,
   );
-  const { areaName, currentMessage, messageLabel, isLoadingLore } = useAILore(
-    isWalking,
-    geo.latitude,
-    geo.longitude,
-    stats.totalDistanceMeters
-  );
+  const { areaName, waypoints, isLoadingRoute } = useAIRoute(isWalking, geo.latitude, geo.longitude);
 
   // Refs so effects can read latest values without stale closures
   const statsRef = useRef(stats);
@@ -153,12 +152,23 @@ export default function HomePage() {
     const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
     setStartDistance(dist);
     setDestination(dest);
+    setWaypointIndex(0);
+    lastAdvancedRef.current = -1;
     badgesComputedRef.current = false;
     lastRelocationRef.current = 0;
     setEarnedBadges([]);
     startTracking();
     setWalkState("walking");
   }, [geo.latitude, geo.longitude, startTracking]);
+
+  // ── When AI waypoints arrive, redirect to first waypoint ──
+  useEffect(() => {
+    if (!isWalking || waypoints.length === 0) return;
+    setWaypointIndex(0);
+    lastAdvancedRef.current = -1;
+    setDestination({ lat: waypoints[0].lat, lng: waypoints[0].lng });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waypoints]);
 
   // ── Arrival detection + time-limit relocation ──
   useEffect(() => {
@@ -175,7 +185,18 @@ export default function HomePage() {
 
     if (dist > ARRIVAL_THRESHOLD_M) return;
 
-    // Check time-limit relocation: if < 80% of allotted time used → redirect
+    // ── Intermediate waypoint arrival ──
+    if (waypoints.length > 0 && waypointIndex < waypoints.length - 1) {
+      if (waypointIndex > lastAdvancedRef.current) {
+        lastAdvancedRef.current = waypointIndex;
+        const nextIdx = waypointIndex + 1;
+        setWaypointIndex(nextIdx);
+        setDestination({ lat: waypoints[nextIdx].lat, lng: waypoints[nextIdx].lng });
+      }
+      return;
+    }
+
+    // ── Time-limit relocation ──
     const currentMode = timeModeRef.current;
     const mCfg = TIME_MODES.find((m) => m.id === currentMode);
     const limitSec: number | null =
@@ -195,7 +216,7 @@ export default function HomePage() {
       return;
     }
 
-    // Normal arrival
+    // ── Final arrival ──
     if (!badgesComputedRef.current) {
       badgesComputedRef.current = true;
       const s = statsRef.current;
@@ -220,7 +241,7 @@ export default function HomePage() {
       markBadgesEarned(earned.map((b) => b.id));
     }
     setWalkState("arrived");
-  }, [walkState, destination, geo.latitude, geo.longitude, stats.totalDistanceMeters, startDistance]);
+  }, [walkState, destination, geo.latitude, geo.longitude, stats.totalDistanceMeters, startDistance, waypoints, waypointIndex]);
 
   // ── Compass calcs ──
   let bearing: number | null = null;
@@ -581,91 +602,116 @@ export default function HomePage() {
                 >
                   {formatDistance(distance)}
                 </div>
+                {/* Waypoint name or fallback label */}
                 <p
-                  className="text-[10px] tracking-[0.4em] mt-2 uppercase"
+                  className="text-[10px] tracking-[0.3em] mt-2"
                   style={{ color: theme.textDim }}
                 >
-                  残り距離
+                  {waypoints.length > 0
+                    ? `→ ${waypoints[waypointIndex]?.name ?? "目的地"}`
+                    : isLoadingRoute
+                    ? "ルート構成中..."
+                    : "残り距離"}
                 </p>
               </div>
 
-              {/* Area name pill */}
-              {areaName && (
-                <div
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] tracking-wider"
-                  style={{
-                    background: "rgba(167,139,250,0.12)",
-                    border: "1px solid rgba(167,139,250,0.25)",
-                    color: "rgba(196,181,253,0.75)",
-                  }}
-                >
-                  <span>📍</span>
-                  <span>{areaName}</span>
+              {/* Route progress dots + area name */}
+              {(waypoints.length > 0 || areaName) && (
+                <div className="flex flex-col items-center gap-1.5">
+                  {waypoints.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      {waypoints.map((wp: Waypoint, i: number) => (
+                        <div
+                          key={i}
+                          className="flex flex-col items-center gap-0.5"
+                          title={wp.name}
+                        >
+                          <div
+                            className="rounded-full transition-all duration-500"
+                            style={{
+                              width: i === waypointIndex ? 8 : 6,
+                              height: i === waypointIndex ? 8 : 6,
+                              background:
+                                i < waypointIndex
+                                  ? "rgba(167,139,250,0.9)"
+                                  : i === waypointIndex
+                                  ? "rgba(196,181,253,1)"
+                                  : "rgba(100,100,120,0.5)",
+                              boxShadow: i === waypointIndex ? "0 0 6px rgba(167,139,250,0.8)" : "none",
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {areaName && (
+                    <div
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] tracking-wider"
+                      style={{
+                        background: "rgba(167,139,250,0.10)",
+                        border: "1px solid rgba(167,139,250,0.22)",
+                        color: "rgba(196,181,253,0.65)",
+                      }}
+                    >
+                      <span>📍</span>
+                      <span>{areaName}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Hint / lore (AI or static) */}
-              {(isLoadingLore || currentMessage || hint) && (
-                <div
-                  key={
-                    isLoadingLore
-                      ? "ai-loading"
-                      : currentMessage
-                      ? `ai:${messageLabel}:${currentMessage.slice(0, 16)}`
-                      : (hint ?? "")
-                  }
-                  className="w-full max-w-xs"
-                  style={{ animation: "hintFade 0.8s ease-out forwards" }}
-                >
+              {/* Waypoint trivia / hint card */}
+              {(() => {
+                const wpTrivia = waypoints[waypointIndex]?.trivia;
+                const showAI = isLoadingRoute || wpTrivia;
+                const cardKey = isLoadingRoute ? "route-loading" : wpTrivia ? `wp-${waypointIndex}` : (hint ?? "");
+                const isAI = isLoadingRoute || !!wpTrivia;
+                const label = isLoadingRoute ? "ルート構成中" : "スポット情報";
+                const text = isLoadingRoute ? "このエリアのルートを構成しています..." : (wpTrivia ?? hint);
+                if (!showAI && !hint) return null;
+                return (
                   <div
-                    className="rounded-r-xl px-4 py-3 backdrop-blur-sm"
-                    style={{
-                      background: theme.cardBg + "99",
-                      border: `1px solid ${theme.cardBorder}`,
-                      borderLeft:
-                        isLoadingLore || currentMessage || hintType === "lore"
+                    key={cardKey}
+                    className="w-full max-w-xs"
+                    style={{ animation: "hintFade 0.8s ease-out forwards" }}
+                  >
+                    <div
+                      className="rounded-r-xl px-4 py-3 backdrop-blur-sm"
+                      style={{
+                        background: theme.cardBg + "99",
+                        border: `1px solid ${theme.cardBorder}`,
+                        borderLeft: isAI || hintType === "lore"
                           ? "2px solid rgba(167,139,250,0.6)"
                           : `2px solid ${theme.hintBorder}`,
-                    }}
-                  >
-                    {(isLoadingLore || currentMessage || hintType === "lore") && (
-                      <p
-                        className="text-[8px] tracking-[0.45em] uppercase mb-1.5"
-                        style={{ color: "rgba(167,139,250,0.65)" }}
-                      >
-                        {isLoadingLore
-                          ? "エリア調査中"
-                          : messageLabel === "route"
-                          ? "ルート案内"
-                          : "豆知識"}
-                      </p>
-                    )}
-                    <p
-                      className={`text-[11px] tracking-[0.12em] leading-relaxed italic font-light${
-                        isLoadingLore ? " animate-pulse" : ""
-                      }`}
-                      style={{
-                        color:
-                          isLoadingLore || currentMessage || hintType === "lore"
-                            ? "rgba(196,181,253,0.70)"
-                            : theme.hintText,
                       }}
                     >
-                      {isLoadingLore
-                        ? "このエリアを調べています..."
-                        : (currentMessage ?? hint)}
-                    </p>
-                    {!isLoadingLore && currentMessage && (
+                      {(isAI || hintType === "lore") && (
+                        <p
+                          className="text-[8px] tracking-[0.45em] uppercase mb-1.5"
+                          style={{ color: "rgba(167,139,250,0.65)" }}
+                        >
+                          {label}
+                        </p>
+                      )}
                       <p
-                        className="text-[8px] mt-1.5"
-                        style={{ color: "rgba(167,139,250,0.35)" }}
+                        className={`text-[11px] tracking-[0.12em] leading-relaxed italic font-light${isLoadingRoute ? " animate-pulse" : ""}`}
+                        style={{
+                          color: isAI || hintType === "lore"
+                            ? "rgba(196,181,253,0.70)"
+                            : theme.hintText,
+                        }}
                       >
-                        ✦ AI
+                        {text}
                       </p>
-                    )}
+                      {!isLoadingRoute && wpTrivia && (
+                        <p className="text-[8px] mt-1.5" style={{ color: "rgba(167,139,250,0.35)" }}>
+                          ✦ AI
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {orientation.heading === null &&
                 orientation.permissionStatus === "granted" && (
