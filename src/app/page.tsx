@@ -36,14 +36,8 @@ import { useAIRoute, Waypoint } from "@/hooks/useAIRoute";
 type WalkState = "idle" | "routing" | "walking" | "arrived";
 type RouteMode = "free" | "destination" | "loop";
 
-interface Destination {
-  lat: number;
-  lng: number;
-}
-
 const ARRIVAL_THRESHOLD_M = 20;
 const ARROW_SIZE = 280;
-const ROUTING_TIMEOUT_MS = 60_000;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -68,15 +62,13 @@ export default function HomePage() {
 
   // ── Walk state ──
   const [walkState, setWalkState] = useState<WalkState>("idle");
-  const [destination, setDestination] = useState<Destination | null>(null);
-  const [startDistance, setStartDistance] = useState<number | null>(null);
+  // Single source of truth: all checkpoints in order, last element = final destination
+  const [routeList, setRouteList] = useState<Waypoint[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [startStraightLineM, setStartStraightLineM] = useState<number | null>(null);
   const [earnedBadges, setEarnedBadges] = useState<Badge[]>([]);
   const [earnedPoints, setEarnedPoints] = useState(0);
   const badgesComputedRef = useRef(false);
-
-  // ── Waypoint navigation ──
-  const [waypointIndex, setWaypointIndex] = useState(0);
-  const lastAdvancedRef = useRef(-1);
 
   // ── GPS ref for async/timeout callbacks ──
   const geoRef = useRef({ lat: geo.latitude, lng: geo.longitude });
@@ -146,63 +138,56 @@ export default function HomePage() {
   const handleStart = useCallback(() => {
     if (geo.latitude === null || geo.longitude === null) return;
 
-    setWaypointIndex(0);
-    lastAdvancedRef.current = -1;
     badgesComputedRef.current = false;
     setEarnedBadges([]);
 
-    // Always start immediately with a random nearby point.
-    // For destination/loop modes, AI route loads in background and retargets when ready.
+    // Immediately start with one random nearby point as the sole entry in routeList.
+    // For destination/loop modes the AI route arrives in background and replaces the list.
     const range: [number, number] = routeMode === "loop" ? [300, 600] : [400, 800];
     const dest = generateRandomDestination(geo.latitude, geo.longitude, range[0], range[1]);
     const dist = calculateDistance(geo.latitude, geo.longitude, dest.lat, dest.lng);
-    setStartDistance(dist);
-    setDestination(dest);
+    setStartStraightLineM(dist);
+    setRouteList([{ lat: dest.lat, lng: dest.lng, name: "", trivia: "" }]);
+    setCurrentIndex(0);
     startTracking();
     setWalkState("walking");
   }, [geo.latitude, geo.longitude, startTracking, routeMode]);
 
-  // ── When AI waypoints arrive, retarget compass to the AI route ──
+  // ── When AI waypoints arrive, replace routeList with the full AI route ──
   useEffect(() => {
     if (!isWalking || waypoints.length === 0) return;
+    setRouteList(waypoints);
+    setCurrentIndex(0);
     const finalWp = waypoints[waypoints.length - 1];
     const { lat: gLat, lng: gLng } = geoRef.current;
     if (gLat !== null && gLng !== null) {
-      setStartDistance(calculateDistance(gLat, gLng, finalWp.lat, finalWp.lng));
+      setStartStraightLineM(calculateDistance(gLat, gLng, finalWp.lat, finalWp.lng));
     }
-    setWaypointIndex(0);
-    lastAdvancedRef.current = -1;
-    setDestination({ lat: waypoints[0].lat, lng: waypoints[0].lng });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waypoints]);
 
-  // ── Arrival detection + time-limit relocation ──
+  // ── Arrival detection ──
   useEffect(() => {
     if (
       walkState !== "walking" ||
-      !destination ||
+      routeList.length === 0 ||
       geo.latitude === null ||
       geo.longitude === null
     ) return;
 
-    const dist = calculateDistance(
-      geo.latitude, geo.longitude, destination.lat, destination.lng
-    );
+    const current = routeList[currentIndex];
+    if (!current) return;
 
+    const dist = calculateDistance(geo.latitude, geo.longitude, current.lat, current.lng);
     if (dist > ARRIVAL_THRESHOLD_M) return;
 
-    // ── Intermediate waypoint arrival ──
-    if (waypoints.length > 0 && waypointIndex < waypoints.length - 1) {
-      if (waypointIndex > lastAdvancedRef.current) {
-        lastAdvancedRef.current = waypointIndex;
-        const nextIdx = waypointIndex + 1;
-        setWaypointIndex(nextIdx);
-        setDestination({ lat: waypoints[nextIdx].lat, lng: waypoints[nextIdx].lng });
-      }
+    // Intermediate checkpoint — advance index, compass auto-retargets via currentTarget
+    if (currentIndex < routeList.length - 1) {
+      setCurrentIndex(currentIndex + 1);
       return;
     }
 
-    // ── Final arrival ──
+    // Final destination
     if (!badgesComputedRef.current) {
       badgesComputedRef.current = true;
       const s = statsRef.current;
@@ -211,7 +196,7 @@ export default function HomePage() {
       setEarnedPoints(pts);
       const earned = checkBadges({
         totalDistanceMeters: s.totalDistanceMeters,
-        straightLineMeters: startDistance ?? 0,
+        straightLineMeters: startStraightLineM ?? 0,
       });
       setEarnedBadges(earned);
       saveWalkLog({
@@ -227,19 +212,20 @@ export default function HomePage() {
       markBadgesEarned(earned.map((b) => b.id));
     }
     setWalkState("arrived");
-  }, [walkState, destination, geo.latitude, geo.longitude, stats.totalDistanceMeters, startDistance, waypoints, waypointIndex]);
+  }, [walkState, routeList, currentIndex, geo.latitude, geo.longitude, stats.totalDistanceMeters, startStraightLineM]);
 
   // ── Compass calcs ──
   let bearing: number | null = null;
   let distance: number | null = null;
   let arrowRotation = 0;
 
-  if (destination && geo.latitude !== null && geo.longitude !== null) {
+  const currentTarget = routeList[currentIndex] ?? null;
+  if (currentTarget && geo.latitude !== null && geo.longitude !== null) {
     bearing = calculateBearing(
-      geo.latitude, geo.longitude, destination.lat, destination.lng
+      geo.latitude, geo.longitude, currentTarget.lat, currentTarget.lng
     );
     distance = calculateDistance(
-      geo.latitude, geo.longitude, destination.lat, destination.lng
+      geo.latitude, geo.longitude, currentTarget.lat, currentTarget.lng
     );
     arrowRotation =
       orientation.heading !== null ? bearing - orientation.heading : bearing;
@@ -667,7 +653,7 @@ export default function HomePage() {
           )}
 
           {/* ── WALKING ── */}
-          {walkState === "walking" && destination && distance !== null && (
+          {walkState === "walking" && currentTarget && distance !== null && (
             <div className="flex flex-col items-center gap-6 w-full">
               {orientation.needsPermissionButton &&
                 orientation.permissionStatus === "prompt" && (
@@ -733,8 +719,8 @@ export default function HomePage() {
                   className="text-[10px] tracking-[0.3em] mt-2"
                   style={{ color: theme.textDim }}
                 >
-                  {waypoints.length > 0
-                    ? `→ ${waypoints[waypointIndex]?.name ?? "目的地"}`
+                  {routeList[currentIndex]?.name
+                    ? `→ ${routeList[currentIndex].name}`
                     : isLoadingRoute
                     ? "ルート構成中..."
                     : "残り距離"}
@@ -742,11 +728,11 @@ export default function HomePage() {
               </div>
 
               {/* Route progress dots + area name */}
-              {(waypoints.length > 0 || areaName) && (
+              {(routeList.length > 1 || areaName) && (
                 <div className="flex flex-col items-center gap-1.5">
-                  {waypoints.length > 0 && (
+                  {routeList.length > 1 && (
                     <div className="flex items-center gap-2">
-                      {waypoints.map((wp: Waypoint, i: number) => (
+                      {routeList.map((wp, i) => (
                         <div
                           key={i}
                           className="flex flex-col items-center gap-0.5"
@@ -755,15 +741,15 @@ export default function HomePage() {
                           <div
                             className="rounded-full transition-all duration-500"
                             style={{
-                              width: i === waypointIndex ? 8 : 6,
-                              height: i === waypointIndex ? 8 : 6,
+                              width: i === currentIndex ? 8 : 6,
+                              height: i === currentIndex ? 8 : 6,
                               background:
-                                i < waypointIndex
+                                i < currentIndex
                                   ? "rgba(167,139,250,0.9)"
-                                  : i === waypointIndex
+                                  : i === currentIndex
                                   ? "rgba(196,181,253,1)"
                                   : "rgba(100,100,120,0.5)",
-                              boxShadow: i === waypointIndex ? "0 0 6px rgba(167,139,250,0.8)" : "none",
+                              boxShadow: i === currentIndex ? "0 0 6px rgba(167,139,250,0.8)" : "none",
                             }}
                           />
                         </div>
@@ -788,9 +774,9 @@ export default function HomePage() {
 
               {/* Waypoint trivia / hint card */}
               {(() => {
-                const wpTrivia = waypoints[waypointIndex]?.trivia;
+                const wpTrivia = routeList[currentIndex]?.trivia;
                 const showAI = isLoadingRoute || wpTrivia;
-                const cardKey = isLoadingRoute ? "route-loading" : wpTrivia ? `wp-${waypointIndex}` : (hint ?? "");
+                const cardKey = isLoadingRoute ? "route-loading" : wpTrivia ? `wp-${currentIndex}` : (hint ?? "");
                 const isAI = isLoadingRoute || !!wpTrivia;
                 const label = isLoadingRoute ? "ルート構成中" : "スポット情報";
                 const text = isLoadingRoute ? "このエリアのルートを構成しています..." : (wpTrivia ?? hint);
@@ -893,7 +879,7 @@ export default function HomePage() {
               </div>
 
               <button
-                onClick={() => { setDestination(null); setWalkState("idle"); }}
+                onClick={() => { setRouteList([]); setWalkState("idle"); }}
                 className="px-6 py-2 rounded-full text-xs tracking-[0.3em] transition-colors"
                 style={{
                   border: `1px solid ${theme.cardBorder}`,
@@ -940,7 +926,7 @@ export default function HomePage() {
             companionSkinId={companionSkinId}
             theme={theme}
             onRestart={handleStart}
-            onFinish={() => { setDestination(null); setWalkState("idle"); }}
+            onFinish={() => { setRouteList([]); setWalkState("idle"); }}
           />
         )}
       </main>
